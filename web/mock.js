@@ -64,7 +64,7 @@
           setTimeout(() => {
             const line = landlordLines.find(l => l.id === msg.id) || { text: msg.text, expected_flags: [], promise: false };
             this._sendToClient({ type: "transcript", speaker: "landlord", lang: "en", text: line.text });
-            this._sendToClient({ type: "translation", to: "tenant", text: "[Ukrainian translation]" });
+            this._sendToClient({ type: "translation", to: "tenant", text: "Можливо, ми зможемо домовитись або знайти якесь рішення." });
             
             const noteMap = {
               "vague_commitment": "ask for it in writing",

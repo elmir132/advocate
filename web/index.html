@@ -5,7 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Advocate</title>
   <link rel="stylesheet" href="style.css">
-  <script src="mock.js"></script>
+  <script>
+    if (window.location.search.includes("mock=1")) {
+      document.write('<script src="mock.js"><\\/script>');
+    }
+  </script>
 </head>
 <body id="app">
   <div id="connection-overlay" class="hidden">
