@@ -1,5 +1,10 @@
 document.addEventListener("DOMContentLoaded", () => {
-  const wsUrl = "ws://127.0.0.1:8000/ws";
+  const isServedByBackend = window.location.port === "8000";
+  const API_BASE = isServedByBackend ? "" : "http://127.0.0.1:8000";
+  const WS_BASE = isServedByBackend 
+    ? (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host + "/ws"
+    : "ws://127.0.0.1:8000/ws";
+
   let ws = null;
   let hasFlagsOrPromises = false;
 
@@ -29,7 +34,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let lastLandlordBubble = null;
 
   function connect() {
-    ws = new WebSocket(wsUrl);
+    ws = new WebSocket(WS_BASE);
     // Expose for mock.js
     document.getElementById("app")._ws = ws;
 
@@ -369,9 +374,11 @@ document.addEventListener("DOMContentLoaded", () => {
   // Load simulator lines
   async function loadSimulator() {
     let lines = [];
+    const _fetch = window.OriginalFetch || window.fetch;
     try {
-      const res = await window.OriginalFetch("../data/landlord_lines.json");
+      const res = await _fetch(API_BASE + "/data/landlord_lines.json");
       if (res.ok) lines = await res.json();
+      else throw new Error("Fetch failed");
     } catch (e) {
       // Fallback to mock
       lines = window.landlordLines || [];
@@ -387,7 +394,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const btn = document.createElement("button");
       btn.textContent = "▶ Play";
       btn.onclick = () => {
-        fetch("/landlord/say", {
+        const _fetch2 = window.OriginalFetch || window.fetch;
+        _fetch2(API_BASE + "/landlord/say", {
           method: "POST",
           body: JSON.stringify({ id: line.id, text: line.text })
         });
@@ -417,10 +425,11 @@ document.addEventListener("DOMContentLoaded", () => {
     elements.tabScore.setAttribute("aria-selected", "true");
     elements.tabAdvocate.setAttribute("aria-selected", "false");
 
+    const _fetch = window.OriginalFetch || window.fetch;
     try {
       const [resEval, resLines] = await Promise.all([
-        window.OriginalFetch("../eval/results.json").catch(() => null),
-        window.OriginalFetch("../data/landlord_lines.json").catch(() => null)
+        _fetch(API_BASE + "/eval/results.json").catch(() => null),
+        _fetch(API_BASE + "/data/landlord_lines.json").catch(() => null)
       ]);
       
       if (resEval && resEval.ok) {

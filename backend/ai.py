@@ -10,7 +10,7 @@ import re
 import wave
 from array import array
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 from google import genai
@@ -76,6 +76,34 @@ LEGAL_ADVICE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+SERVICE_MAX_ATTEMPTS = 3
+SERVICE_RETRY_DELAY_SECONDS = 0.5
+
+
+def is_retryable_service_error(error: Exception) -> bool:
+    """Retry only explicit 503s or errors that identify an overloaded service."""
+    code = getattr(error, "code", None)
+    status = getattr(error, "status", None)
+    message = getattr(error, "message", "")
+    if code == 503 or status == 503:
+        return True
+    return isinstance(message, str) and "overload" in message.lower()
+
+
+async def call_with_service_retries(
+    operation: Callable[[], Any], *, threaded: bool = True
+) -> Any:
+    """Run at most three times, pausing briefly only for 503/overload failures."""
+    for attempt in range(SERVICE_MAX_ATTEMPTS):
+        try:
+            if threaded:
+                return await asyncio.to_thread(operation)
+            return await operation()
+        except Exception as error:
+            if not is_retryable_service_error(error) or attempt == SERVICE_MAX_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(SERVICE_RETRY_DELAY_SECONDS)
+
 
 def normalize_analysis(payload: Any, expected_id: str) -> dict[str, Any]:
     """Validate model fields, force the supplied ID, and drop unknown flags."""
@@ -113,8 +141,10 @@ def normalize_analysis(payload: Any, expected_id: str) -> dict[str, Any]:
     }
 
 
-def wav_to_pcm16k(wav_data: bytes) -> bytes:
-    """Convert a TTS WAV payload to mono signed PCM16 at 16 kHz."""
+def _wav_to_pcm16(wav_data: bytes, target_rate: int) -> bytes:
+    """Strip a WAV container and convert its PCM samples to mono at target_rate."""
+    if target_rate < 1:
+        raise ValueError("Target sample rate must be positive")
     with wave.open(io.BytesIO(wav_data), "rb") as wav_file:
         channels = wav_file.getnchannels()
         sample_width = wav_file.getsampwidth()
@@ -135,13 +165,13 @@ def wav_to_pcm16k(wav_data: bytes) -> bytes:
             frame = samples[offset : offset + channels]
             mono.append(int(sum(frame) / channels))
         samples = mono
-    if sample_rate == 16000:
+    if sample_rate == target_rate:
         output = samples
     else:
-        output_count = max(1, round(len(samples) * 16000 / sample_rate))
+        output_count = max(1, round(len(samples) * target_rate / sample_rate))
         output = array("h")
         for index in range(output_count):
-            position = index * sample_rate / 16000
+            position = index * sample_rate / target_rate
             left = min(int(position), len(samples) - 1)
             right = min(left + 1, len(samples) - 1)
             fraction = position - left
@@ -149,6 +179,16 @@ def wav_to_pcm16k(wav_data: bytes) -> bytes:
     if os.sys.byteorder != "little":
         output.byteswap()
     return output.tobytes()
+
+
+def wav_to_pcm16k(wav_data: bytes) -> bytes:
+    """Convert a TTS WAV payload to headerless mono PCM16 at 16 kHz for Live input."""
+    return _wav_to_pcm16(wav_data, 16000)
+
+
+def wav_to_pcm24k(wav_data: bytes) -> bytes:
+    """Convert a WAV payload to headerless mono PCM16 at 24 kHz for browser output."""
+    return _wav_to_pcm16(wav_data, 24000)
 
 
 class GeminiGateway:
@@ -183,7 +223,7 @@ class GeminiGateway:
         if self.client is None:
             return self.models
         try:
-            model_rows = await asyncio.to_thread(lambda: list(self.client.models.list()))
+            model_rows = await call_with_service_retries(lambda: list(self.client.models.list()))
             discovered: dict[str, frozenset[str]] = {}
             for row in model_rows:
                 name = getattr(row, "name", "") or ""
@@ -225,7 +265,7 @@ class GeminiGateway:
             return response.text
 
         try:
-            text = await asyncio.to_thread(request)
+            text = await call_with_service_retries(request)
             if not text:
                 return None
             return json.loads(text)
@@ -288,6 +328,27 @@ class GeminiGateway:
             return None
         return {"transcript": transcript.strip(), "translation": translation.strip()}
 
+    async def translate_tenant_text(self, text: str, tenant_lang: str) -> str | None:
+        """Translate typed tenant speech to English using the text fallback."""
+        await self.discover_models()
+        model = self.select_model("generateContent", TEXT_CANDIDATES)
+        if not model:
+            return None
+        schema = {
+            "type": "OBJECT",
+            "properties": {"translation": {"type": "STRING"}},
+            "required": ["translation"],
+        }
+        prompt = (
+            f"Translate the tenant's supplied text from {tenant_lang} into English faithfully. "
+            "Return JSON with only a translation field. Preserve the speaker's meaning and tone. "
+            "Do not add commentary, interpretation, or legal advice. Tenant text: "
+            f"{json.dumps(text, ensure_ascii=False)}"
+        )
+        payload = await self._generate_json(model, prompt, schema)
+        translation = payload.get("translation") if isinstance(payload, dict) else None
+        return translation.strip() if isinstance(translation, str) and translation.strip() else None
+
     async def summarize(self, conversation: list[dict[str, str]], tenant_lang: str) -> dict[str, Any] | None:
         await self.discover_models()
         model = self.select_model("generateContent", TEXT_CANDIDATES)
@@ -335,7 +396,7 @@ class GeminiGateway:
             return None
 
         try:
-            return await asyncio.to_thread(request)
+            return await call_with_service_retries(request)
         except Exception:
             return None
 
