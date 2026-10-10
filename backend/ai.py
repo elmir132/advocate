@@ -28,7 +28,16 @@ ALLOWED_FLAGS = frozenset(
 # IDs are selected only if the authenticated models.list response advertises
 # the required action for the current key.
 LIVE_CANDIDATES = ("gemini-3.8-live", "gemini-3.8-live-extended-thinking")
-TEXT_CANDIDATES = ("gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite")
+TEXT_CANDIDATES = (
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+)
 TTS_CANDIDATES = ("gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts")
 
 ANALYSIS_SCHEMA = {
@@ -146,7 +155,17 @@ class GeminiGateway:
     def __init__(self, root: Path = ROOT) -> None:
         load_dotenv(root / ".env", override=False)
         self.api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        self.client = genai.Client(api_key=self.api_key) if self.api_key else None
+        self.client = (
+            genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(
+                    timeout=30_000,
+                    retry_options=types.HttpRetryOptions(attempts=1),
+                ),
+            )
+            if self.api_key
+            else None
+        )
         self.models: dict[str, frozenset[str]] = {}
         self.discovery_attempted = False
         self.discovery_error = False

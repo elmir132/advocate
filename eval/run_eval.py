@@ -68,7 +68,7 @@ async def _run(args: argparse.Namespace, gateway_factory: Callable[[], GeminiGat
             await gateway.close()
             return 2
         results = []
-        for line in truth:
+        for index, line in enumerate(truth, start=1):
             output = await gateway.analyze_landlord_line(line["id"], line["text"], "en")
             if output["note"].startswith("Automated analysis is unavailable;"):
                 print(f"Model evaluation failed on {line['id']}; no partial results were written.")
@@ -77,6 +77,7 @@ async def _run(args: argparse.Namespace, gateway_factory: Callable[[], GeminiGat
             results.append(
                 {"id": line["id"], "flags": output["flags"], "promise": output["promise"]}
             )
+            print(f"Evaluated {index}/{len(truth)} lines", file=sys.stderr, flush=True)
         await gateway.close()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
