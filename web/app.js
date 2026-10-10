@@ -77,6 +77,10 @@ document.addEventListener("DOMContentLoaded", () => {
         handleAnalysis(msg);
         break;
 
+      case "audio":
+        playAudio(msg.data);
+        break;
+
       case "summary":
         showSummary(msg.markdown);
         break;
@@ -85,6 +89,52 @@ document.addEventListener("DOMContentLoaded", () => {
         console.error("Server Error:", msg.message);
         break;
     }
+  }
+
+  // Audio Playback
+  const muteToggle = document.getElementById("mute-toggle");
+  let outAudioCtx = null;
+  let nextStartTime = 0;
+
+  function base64ToFloat32(base64) {
+    const binary = atob(base64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const int16Array = new Int16Array(bytes.buffer);
+    const float32Array = new Float32Array(int16Array.length);
+    for (let i = 0; i < int16Array.length; i++) {
+      float32Array[i] = int16Array[i] / (int16Array[i] < 0 ? 0x8000 : 0x7FFF);
+    }
+    return float32Array;
+  }
+
+  function playAudio(base64Data) {
+    if (muteToggle.checked) return;
+
+    if (!outAudioCtx) {
+      outAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    }
+    if (outAudioCtx.state === 'suspended') {
+      outAudioCtx.resume();
+    }
+
+    const float32Data = base64ToFloat32(base64Data);
+    const audioBuffer = outAudioCtx.createBuffer(1, float32Data.length, 24000);
+    audioBuffer.getChannelData(0).set(float32Data);
+
+    const source = outAudioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(outAudioCtx.destination);
+
+    const currentTime = outAudioCtx.currentTime;
+    if (nextStartTime < currentTime) {
+      nextStartTime = currentTime + 0.05; // 50ms buffer to prevent initial click
+    }
+    source.start(nextStartTime);
+    nextStartTime += audioBuffer.duration;
   }
 
   function appendTranscript(speaker, text, lang) {
