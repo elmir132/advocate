@@ -4,7 +4,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.ai import normalize_analysis
-from backend.main import app, gateway, validate_client_message
+from backend.main import (
+    ConnectionState,
+    _watch_live_audio,
+    app,
+    gateway,
+    validate_client_message,
+)
 
 
 def test_unknown_flags_are_dropped_and_id_is_forced():
@@ -59,3 +65,32 @@ def test_websocket_idle_and_stop_without_live_api():
             assert websocket.receive_json() == {"type": "status", "state": "idle"}
             websocket.send_json({"type": "stop"})
             assert websocket.receive_json() == {"type": "status", "state": "idle"}
+
+
+def test_live_audio_watchdog_uses_text_fallback_without_network(monkeypatch):
+    class FakeWebSocket:
+        def __init__(self):
+            self.messages = []
+
+        async def send_json(self, message):
+            self.messages.append(message)
+
+    async def fake_translate(_audio, _language):
+        return {"transcript": "A spoken request.", "translation": "A request."}
+
+    monkeypatch.setattr("backend.main.LIVE_AUDIO_GRACE_SECONDS", 0)
+    monkeypatch.setattr("backend.main.FALLBACK_QUIET_SECONDS", 0)
+    monkeypatch.setattr(gateway, "translate_tenant_audio", fake_translate)
+
+    async def run():
+        state = ConnectionState(FakeWebSocket())
+        state.unconfirmed_live_audio.extend(b"\x00\x00")
+        await _watch_live_audio(state)
+        await state.fallback_worker
+        assert state.live_failed is True
+        assert any(message.get("type") == "translation" for message in state.websocket.messages)
+        assert any(message.get("type") == "transcript" for message in state.websocket.messages)
+
+    import asyncio
+
+    asyncio.run(run())

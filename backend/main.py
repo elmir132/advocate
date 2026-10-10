@@ -7,6 +7,7 @@ import base64
 import binascii
 import contextlib
 import re
+import time
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -19,7 +20,10 @@ from backend.ai import GeminiGateway, wav_to_pcm16k
 
 LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
 MAX_AUDIO_BYTES = 512_000
+MAX_BUFFERED_AUDIO_BYTES = 2_000_000
 MAX_TEXT_CHARS = 8_000
+LIVE_AUDIO_GRACE_SECONDS = 12.0
+FALLBACK_QUIET_SECONDS = 0.8
 
 
 class LandlordSayRequest(BaseModel):
@@ -71,11 +75,17 @@ class ConnectionState:
         self.exit_stack = AsyncExitStack()
         self.live_session: Any | None = None
         self.live_reader: asyncio.Task[None] | None = None
+        self.live_audio_watchdog: asyncio.Task[None] | None = None
+        self.fallback_worker: asyncio.Task[None] | None = None
         self.live_failed = False
+        self.live_audio_confirmed = False
         self.started = False
         self.tenant_lang = "uk"
         self.live_input_speaker = "tenant"
         self.pending_landlord_translation: asyncio.Future[str] | None = None
+        self.unconfirmed_live_audio = bytearray()
+        self.fallback_audio = bytearray()
+        self.last_fallback_audio_at = 0.0
         self.history: list[dict[str, Any]] = []
         self.summary_approved = False
 
@@ -156,11 +166,14 @@ async def read_live_session(state: ConnectionState) -> None:
             content = getattr(response, "server_content", None)
             if content is None:
                 continue
+            if state.live_failed:
+                continue
             input_speaker = state.live_input_speaker
             input_transcription = getattr(content, "input_transcription", None)
             if input_transcription and getattr(input_transcription, "text", None):
                 text = input_transcription.text.strip()
                 if text and input_speaker == "tenant":
+                    confirm_live_audio(state)
                     state.history.append({"speaker": "tenant", "lang": state.tenant_lang, "text": text})
                     await state.send(
                         {"type": "transcript", "speaker": "tenant", "lang": state.tenant_lang, "text": text}
@@ -171,6 +184,8 @@ async def read_live_session(state: ConnectionState) -> None:
             if translated:
                 translated = translated.strip()
                 if translated:
+                    if input_speaker == "tenant":
+                        confirm_live_audio(state)
                     to = "tenant" if input_speaker == "landlord" else "landlord"
                     await state.send({"type": "translation", "to": to, "text": translated})
                     state.history.append({"speaker": "translation", "lang": state.tenant_lang, "text": translated})
@@ -198,9 +213,80 @@ async def read_live_session(state: ConnectionState) -> None:
     except Exception:
         state.live_failed = True
         state.live_session = None
+        await move_unconfirmed_audio_to_fallback(state)
         pending = state.pending_landlord_translation
         if pending and not pending.done():
             pending.set_exception(RuntimeError("Live translation unavailable"))
+
+
+def confirm_live_audio(state: ConnectionState) -> None:
+    state.live_audio_confirmed = True
+    state.unconfirmed_live_audio.clear()
+    task = state.live_audio_watchdog
+    if task is not None and not task.done():
+        task.cancel()
+    state.live_audio_watchdog = None
+
+
+async def _fallback_worker(state: ConnectionState) -> None:
+    while state.fallback_audio:
+        quiet_for = time.monotonic() - state.last_fallback_audio_at
+        if quiet_for < FALLBACK_QUIET_SECONDS:
+            await asyncio.sleep(FALLBACK_QUIET_SECONDS - quiet_for)
+        audio = bytes(state.fallback_audio)
+        state.fallback_audio.clear()
+        await state.status("thinking")
+        fallback = await gateway.translate_tenant_audio(audio, state.tenant_lang)
+        if fallback:
+            state.history.append(
+                {"speaker": "tenant", "lang": state.tenant_lang, "text": fallback["transcript"]}
+            )
+            await state.send(
+                {
+                    "type": "transcript",
+                    "speaker": "tenant",
+                    "lang": state.tenant_lang,
+                    "text": fallback["transcript"],
+                }
+            )
+            await state.send(
+                {"type": "translation", "to": "landlord", "text": fallback["translation"]}
+            )
+        else:
+            await state.error("Live interpretation is unavailable; please try again in a moment.")
+        await state.status("listening")
+
+
+def schedule_text_fallback(state: ConnectionState, audio: bytes) -> None:
+    if len(state.fallback_audio) + len(audio) > MAX_BUFFERED_AUDIO_BYTES:
+        state.fallback_audio.clear()
+        asyncio.create_task(state.error("Audio buffer is full; pause speaking and try again."))
+        return
+    state.fallback_audio.extend(audio)
+    state.last_fallback_audio_at = time.monotonic()
+    if state.fallback_worker is None or state.fallback_worker.done():
+        state.fallback_worker = asyncio.create_task(_fallback_worker(state))
+
+
+async def move_unconfirmed_audio_to_fallback(state: ConnectionState) -> None:
+    if state.live_audio_watchdog is not None and state.live_audio_watchdog is not asyncio.current_task():
+        state.live_audio_watchdog.cancel()
+    state.live_audio_watchdog = None
+    if state.unconfirmed_live_audio:
+        audio = bytes(state.unconfirmed_live_audio)
+        state.unconfirmed_live_audio.clear()
+        schedule_text_fallback(state, audio)
+
+
+async def _watch_live_audio(state: ConnectionState) -> None:
+    try:
+        await asyncio.sleep(LIVE_AUDIO_GRACE_SECONDS)
+        if not state.live_audio_confirmed and state.unconfirmed_live_audio:
+            state.live_failed = True
+            state.live_session = None
+            await move_unconfirmed_audio_to_fallback(state)
+    except asyncio.CancelledError:
+        raise
 
 
 async def send_landlord_line(
@@ -299,33 +385,31 @@ async def websocket_session(websocket: WebSocket) -> None:
                 await state.status("thinking")
                 audio = payload["_audio_bytes"]
                 if state.live_session is not None and not state.live_failed:
+                    if not state.live_audio_confirmed:
+                        if len(state.unconfirmed_live_audio) + len(audio) <= MAX_BUFFERED_AUDIO_BYTES:
+                            state.unconfirmed_live_audio.extend(audio)
+                        else:
+                            state.live_failed = True
+                            state.live_session = None
+                            await move_unconfirmed_audio_to_fallback(state)
+                            schedule_text_fallback(state, audio)
+                        if state.live_audio_watchdog is None and not state.live_failed:
+                            state.live_audio_watchdog = asyncio.create_task(_watch_live_audio(state))
                     try:
-                        async with state.live_send_lock:
-                            await state.live_session.send_realtime_input(
-                                audio=types.Blob(data=audio, mime_type="audio/pcm;rate=16000")
-                            )
+                        if state.live_session is not None and not state.live_failed:
+                            async with state.live_send_lock:
+                                await state.live_session.send_realtime_input(
+                                    audio=types.Blob(data=audio, mime_type="audio/pcm;rate=16000")
+                                )
                     except Exception:
                         state.live_failed = True
                         state.live_session = None
-                if state.live_session is None or state.live_failed:
-                    fallback = await gateway.translate_tenant_audio(audio, state.tenant_lang)
-                    if fallback:
-                        state.history.append(
-                            {"speaker": "tenant", "lang": state.tenant_lang, "text": fallback["transcript"]}
-                        )
-                        await state.send(
-                            {
-                                "type": "transcript",
-                                "speaker": "tenant",
-                                "lang": state.tenant_lang,
-                                "text": fallback["transcript"],
-                            }
-                        )
-                        await state.send(
-                            {"type": "translation", "to": "landlord", "text": fallback["translation"]}
-                        )
-                    else:
-                        await state.error("Live interpretation is unavailable; please try again in a moment.")
+                        if state.live_audio_confirmed:
+                            schedule_text_fallback(state, audio)
+                        else:
+                            await move_unconfirmed_audio_to_fallback(state)
+                elif state.live_session is None or state.live_failed:
+                    schedule_text_fallback(state, audio)
                 await state.status("listening")
             elif kind == "landlord_text":
                 if not state.started:
@@ -354,6 +438,11 @@ async def websocket_session(websocket: WebSocket) -> None:
             state.live_reader.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await state.live_reader
+        for task in (state.live_audio_watchdog, state.fallback_worker):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         with contextlib.suppress(Exception):
             await state.exit_stack.aclose()
         await hub.remove(state)
