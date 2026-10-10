@@ -147,7 +147,9 @@ async def start_live_session(state: ConnectionState) -> None:
     }
     try:
         connector = gateway.client.aio.live.connect(model=model, config=config)
-        state.live_session = await state.exit_stack.enter_async_context(connector)
+        state.live_session = await asyncio.wait_for(
+            state.exit_stack.enter_async_context(connector), timeout=12.0
+        )
         state.live_reader = asyncio.create_task(read_live_session(state))
     except Exception:
         state.live_session = None
@@ -333,7 +335,8 @@ async def send_landlord_line(
                         await asyncio.wait_for(asyncio.shield(future), timeout=8.0)
                         live_translation_received = True
                     except (asyncio.TimeoutError, RuntimeError):
-                        pass
+                        state.live_failed = True
+                        state.live_session = None
                     finally:
                         state.pending_landlord_translation = None
                         state.live_input_speaker = "tenant"
@@ -371,6 +374,9 @@ async def websocket_session(websocket: WebSocket) -> None:
 
             kind = payload["type"]
             if kind == "start":
+                if state.started:
+                    await state.error("This interpreter session is already running.")
+                    continue
                 state.tenant_lang = payload.get("tenant_lang", "uk")
                 state.started = True
                 state.history.clear()

@@ -1,9 +1,11 @@
 import base64
+import io
+import wave
 
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.ai import normalize_analysis
+from backend.ai import normalize_analysis, wav_to_pcm16k
 from backend.main import (
     ConnectionState,
     _watch_live_audio,
@@ -38,6 +40,16 @@ def test_malformed_analysis_does_not_emit_unknown_flags():
     assert result["id"] == "L02"
     assert result["flags"] == []
     assert result["promise"] is False
+
+
+def test_tts_wav_converter_rejects_empty_audio():
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(24000)
+    with pytest.raises(ValueError, match="Empty TTS audio"):
+        wav_to_pcm16k(buffer.getvalue())
 
 
 def test_client_message_validation():
@@ -124,6 +136,11 @@ def test_summary_is_generated_only_after_approval_without_network(monkeypatch):
             websocket.send_json({"type": "start", "tenant_lang": "uk"})
             assert websocket.receive_json() == {"type": "status", "state": "thinking"}
             assert websocket.receive_json() == {"type": "status", "state": "listening"}
+            websocket.send_json({"type": "start", "tenant_lang": "uk"})
+            assert websocket.receive_json() == {
+                "type": "error",
+                "message": "This interpreter session is already running.",
+            }
             websocket.send_json({"type": "landlord_text", "id": "L04", "text": "I will repair the heater."})
             preapproval = [websocket.receive_json() for _ in range(5)]
             assert not any(message["type"] == "summary" for message in preapproval)

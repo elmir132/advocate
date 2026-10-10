@@ -125,6 +125,8 @@ def wav_to_pcm16k(wav_data: bytes) -> bytes:
 
     samples = array("h")
     samples.frombytes(raw)
+    if not samples:
+        raise ValueError("Empty TTS audio")
     if os.sys.byteorder != "little":
         samples.byteswap()
     if channels > 1:
