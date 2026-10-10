@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import base64
 import binascii
 import contextlib
@@ -672,9 +673,12 @@ async def landlord_say(request: LandlordSayRequest) -> dict[str, bool]:
     if state is None:
         raise HTTPException(status_code=409, detail="No active interpreter session.")
     await send_landlord_line(state, request.id, request.text)
-    task = asyncio.create_task(generate_and_stream_landlord_audio(state, request.id, request.text))
-    state.background_audio_tasks.add(task)
-    task.add_done_callback(state.background_audio_tasks.discard)
+    # Spoken landlord audio goes through the Live model and sometimes returned garbled text
+    # in the demo, so it is opt-in (ADVOCATE_LANDLORD_AUDIO=1). Text, flags and translation always work.
+    if os.environ.get("ADVOCATE_LANDLORD_AUDIO") == "1":
+        task = asyncio.create_task(generate_and_stream_landlord_audio(state, request.id, request.text))
+        state.background_audio_tasks.add(task)
+        task.add_done_callback(state.background_audio_tasks.discard)
     return {"ok": True}
 
 

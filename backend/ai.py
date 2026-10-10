@@ -272,6 +272,29 @@ class GeminiGateway:
         except Exception:
             return None
 
+    async def _plain_translate(self, model: str, text: str, lang: str) -> str | None:
+        """Translate with an ordinary text call. Structured JSON output sometimes garbled Ukrainian words."""
+        if self.client is None:
+            return None
+
+        def request() -> str | None:
+            response = self.client.models.generate_content(
+                model=model,
+                contents=(
+                    f"Translate faithfully into the language with code {lang}. Use real, correct words only. "
+                    f"Reply with the translation only, no quotes and no commentary.\n\n{text}"
+                ),
+                config=types.GenerateContentConfig(temperature=0.0),
+            )
+            return response.text
+
+        try:
+            out = await call_with_service_retries(request)
+        except Exception:
+            return None
+        out = (out or "").strip()
+        return out or None
+
     async def analyze_landlord_line(self, line_id: str, text: str, tenant_lang: str) -> dict[str, Any]:
         await self.discover_models()
         model = self.select_model("generateContent", TEXT_CANDIDATES)
@@ -291,15 +314,20 @@ class GeminiGateway:
             "Do not add legal advice or conclusions. If uncertain, omit the flag and say so.\n"
             f"LANDLORD LINE ID: {line_id}\nLANDLORD LINE: {text}"
         )
-        payload = await self._generate_json(model, prompt, ANALYSIS_SCHEMA)
+        payload, plain = await asyncio.gather(
+            self._generate_json(model, prompt, ANALYSIS_SCHEMA),
+            self._plain_translate(model, text, tenant_lang),
+        )
         if payload is None:
             return normalize_analysis(
                 {
-                    "translation": text,
+                    "translation": plain or text,
                     "note": "Automated analysis is unavailable; no flags could be confirmed.",
                 },
                 line_id,
             )
+        if plain:
+            payload = {**payload, "translation": plain}
         return normalize_analysis(payload, line_id)
 
     async def translate_tenant_audio(self, pcm16: bytes, tenant_lang: str) -> dict[str, str] | None:

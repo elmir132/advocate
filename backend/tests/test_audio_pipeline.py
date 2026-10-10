@@ -100,6 +100,7 @@ def test_background_simulator_turn_keeps_audio_but_suppresses_duplicate_translat
 
 
 def test_simulator_returns_text_before_background_tts_and_uses_disk_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("ADVOCATE_LANDLORD_AUDIO", "1")
     state = ConnectionState(FakeWebSocket())
     state.started = True
     state.tenant_lang = "uk"

@@ -19,16 +19,17 @@
     </div>
   </div>
 
-  <header style="padding: 1rem 2rem; background-color: var(--bubble-landlord); border-bottom: 2px solid var(--border-color); display: flex; align-items: baseline; gap: 1rem;">
-    <h1 style="margin: 0; font-size: 2rem;">Advocate</h1>
-    <span style="font-size: 1.2rem; opacity: 0.8; font-style: italic;">Speak up, in any language</span>
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><h1>Advocate</h1></div>
+    <span class="tagline">Speak up, in any language</span>
+    <span class="beta-note">Not legal advice</span>
   </header>
 
   <div class="main-layout">
     <!-- LEFT: Conversation -->
     <div class="left-panel">
       <div class="status-bar">
-        <span id="status-indicator">Listening</span>
+        <span class="status-dot" aria-hidden="true"></span><span id="status-indicator">Listening</span>
         <div id="waveform" class="waveform"></div>
       </div>
       <div id="conversation" class="conversation" aria-live="polite">
@@ -86,7 +87,7 @@
         <button id="mic-btn" class="mic-btn" aria-label="Hold space to talk" title="Hold Space to talk">
           🎤 Push to Talk
         </button>
-        <label id="mute-toggle-label" style="display:flex; align-items:center; gap:0.2rem; cursor:pointer; font-size: 0.9rem; white-space: nowrap;">
+        <label id="mute-toggle-label" class="mute-label">
           <input type="checkbox" id="mute-toggle" /> Mute Audio
         </label>
       </div>
