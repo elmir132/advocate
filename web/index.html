@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Advocate</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="mock.js"></script>
+</head>
+<body id="app">
+  <div id="connection-overlay" class="hidden">
+    <div class="overlay-content">
+      <p>Connection lost.</p>
+      <button id="retry-btn">Retry Connection</button>
+    </div>
+  </div>
+
+  <div class="main-layout">
+    <!-- LEFT: Conversation -->
+    <div class="left-panel">
+      <div class="status-bar">
+        <span id="status-indicator">Listening</span>
+        <div id="waveform" class="waveform"></div>
+      </div>
+      <div id="conversation" class="conversation" aria-live="polite">
+        <!-- Chat bubbles appear here -->
+      </div>
+    </div>
+
+    <!-- RIGHT: Advocate Panel -->
+    <div class="right-panel">
+      <div class="tabs">
+        <button id="tab-advocate" class="tab active" aria-selected="true">Advocate</button>
+        <button id="tab-score" class="tab" aria-selected="false">Score</button>
+      </div>
+      
+      <div id="advocate-view" class="tab-content active">
+        <div id="promises-list" class="promises-list">
+          <h3>Promises so far</h3>
+          <ul id="promises-ul"></ul>
+        </div>
+        <div id="flags-list" class="flags-list">
+          <h3>Recent Flags</h3>
+          <div id="flags-container"></div>
+        </div>
+      </div>
+
+      <div id="score-view" class="tab-content hidden">
+        <h3>Evaluation Score</h3>
+        <pre id="score-output">Loading results...</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM: Controls -->
+  <div class="bottom-panel">
+    <div class="controls-left">
+      <select id="tenant-lang" aria-label="Tenant Language">
+        <option value="uk" selected>Ukrainian</option>
+        <option value="ru">Russian</option>
+        <option value="es">Spanish</option>
+        <option value="zh">Chinese</option>
+        <option value="en">English</option>
+      </select>
+      <button id="mic-btn" class="mic-btn" aria-label="Hold space to talk" title="Hold Space to talk">
+        🎤 Push to Talk
+      </button>
+    </div>
+    
+    <div class="controls-center">
+      <details class="simulator-drawer">
+        <summary>Landlord Simulator</summary>
+        <div id="simulator-lines" class="simulator-lines">
+          <!-- Populated from mock.js window.landlordLines -->
+        </div>
+      </details>
+    </div>
+
+    <div class="controls-right">
+      <button id="approve-btn" disabled>Approve and prepare summary</button>
+    </div>
+  </div>
+
+  <footer>
+    <p>Not legal advice. Flags are candidates. Nothing is sent.</p>
+  </footer>
+
+  <!-- Modal for Summary -->
+  <dialog id="summary-dialog">
+    <div class="dialog-content">
+      <h2>Summary</h2>
+      <div id="summary-content"></div>
+      <button id="close-summary">Close</button>
+    </div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
