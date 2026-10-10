@@ -43,6 +43,7 @@
     <div class="right-panel">
       <div class="tabs">
         <button id="tab-advocate" class="tab active" aria-selected="true">Advocate</button>
+        <button id="tab-simulator" class="tab" aria-selected="false">Simulator</button>
         <button id="tab-score" class="tab" aria-selected="false">Score</button>
       </div>
       
@@ -54,6 +55,13 @@
         <div id="flags-list" class="flags-list">
           <h3>Recent Flags</h3>
           <div id="flags-container"></div>
+        </div>
+      </div>
+
+      <div id="simulator-view" class="tab-content hidden">
+        <h3>Landlord Simulator</h3>
+        <div id="simulator-lines" class="simulator-lines-flat">
+          <!-- Populated from mock.js window.landlordLines -->
         </div>
       </div>
 
@@ -86,12 +94,6 @@
     </div>
     
     <div class="controls-center">
-      <details class="simulator-drawer">
-        <summary>Landlord Simulator</summary>
-        <div id="simulator-lines" class="simulator-lines">
-          <!-- Populated from mock.js window.landlordLines -->
-        </div>
-      </details>
     </div>
 
     <div class="controls-right">

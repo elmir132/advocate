@@ -24,14 +24,17 @@ document.addEventListener("DOMContentLoaded", () => {
     tabScore: document.getElementById("tab-score"),
     viewAdvocate: document.getElementById("advocate-view"),
     viewScore: document.getElementById("score-view"),
+    viewSimulator: document.getElementById("simulator-view"),
     scoreOutput: document.getElementById("score-output"),
     summaryDialog: document.getElementById("summary-dialog"),
     summaryContent: document.getElementById("summary-content"),
-    closeSummary: document.getElementById("close-summary")
+    closeSummary: document.getElementById("close-summary"),
+    tabSimulator: document.getElementById("tab-simulator"),
   };
 
   let lastTenantBubble = null;
   let lastLandlordBubble = null;
+  let activePlayBtn = null;
 
   function connect() {
     ws = new WebSocket(WS_BASE);
@@ -148,6 +151,12 @@ document.addEventListener("DOMContentLoaded", () => {
       emptyState.style.display = "none";
     }
 
+    if (speaker === "landlord" && activePlayBtn) {
+      activePlayBtn.textContent = "▶ Play";
+      activePlayBtn.disabled = false;
+      activePlayBtn = null;
+    }
+
     const bubble = document.createElement("div");
     bubble.className = `message ${speaker}`;
     
@@ -189,7 +198,12 @@ document.addEventListener("DOMContentLoaded", () => {
     if (targetBubble) {
       const transEl = targetBubble.querySelector(".translation");
       if (transEl) {
-        transEl.textContent = text;
+        // Appending instead of replacing for streamed translations
+        if (transEl.textContent) {
+          transEl.textContent += " " + text.trim();
+        } else {
+          transEl.textContent = text.trim();
+        }
       }
     }
   }
@@ -454,6 +468,14 @@ document.addEventListener("DOMContentLoaded", () => {
       const btn = document.createElement("button");
       btn.textContent = "▶ Play";
       btn.onclick = () => {
+        if (activePlayBtn) {
+          activePlayBtn.textContent = "▶ Play";
+          activePlayBtn.disabled = false;
+        }
+        btn.textContent = "Speaking...";
+        btn.disabled = true;
+        activePlayBtn = btn;
+        
         const _fetch2 = window.OriginalFetch || window.fetch;
         _fetch2(API_BASE + "/landlord/say", {
           method: "POST",
@@ -471,19 +493,40 @@ document.addEventListener("DOMContentLoaded", () => {
   elements.tabAdvocate.addEventListener("click", () => {
     elements.tabAdvocate.classList.add("active");
     elements.tabScore.classList.remove("active");
+    elements.tabSimulator.classList.remove("active");
+    elements.viewAdvocate.classList.add("active");
     elements.viewAdvocate.classList.remove("hidden");
-    elements.viewScore.classList.add("hidden");
+    elements.viewScore.classList.remove("active");
+    elements.viewSimulator.classList.remove("active");
     elements.tabAdvocate.setAttribute("aria-selected", "true");
+    elements.tabScore.setAttribute("aria-selected", "false");
+    elements.tabSimulator.setAttribute("aria-selected", "false");
+  });
+
+  elements.tabSimulator.addEventListener("click", () => {
+    elements.tabSimulator.classList.add("active");
+    elements.tabAdvocate.classList.remove("active");
+    elements.tabScore.classList.remove("active");
+    elements.viewSimulator.classList.add("active");
+    elements.viewSimulator.classList.remove("hidden");
+    elements.viewAdvocate.classList.remove("active");
+    elements.viewScore.classList.remove("active");
+    elements.tabSimulator.setAttribute("aria-selected", "true");
+    elements.tabAdvocate.setAttribute("aria-selected", "false");
     elements.tabScore.setAttribute("aria-selected", "false");
   });
 
   elements.tabScore.addEventListener("click", async () => {
     elements.tabScore.classList.add("active");
     elements.tabAdvocate.classList.remove("active");
+    elements.tabSimulator.classList.remove("active");
+    elements.viewScore.classList.add("active");
     elements.viewScore.classList.remove("hidden");
-    elements.viewAdvocate.classList.add("hidden");
+    elements.viewAdvocate.classList.remove("active");
+    elements.viewSimulator.classList.remove("active");
     elements.tabScore.setAttribute("aria-selected", "true");
     elements.tabAdvocate.setAttribute("aria-selected", "false");
+    elements.tabSimulator.setAttribute("aria-selected", "false");
 
     const _fetch = window.OriginalFetch || window.fetch;
     try {
