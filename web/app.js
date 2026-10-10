@@ -479,8 +479,11 @@ document.addEventListener("DOMContentLoaded", () => {
         const _fetch2 = window.OriginalFetch || window.fetch;
         _fetch2(API_BASE + "/landlord/say", {
           method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: line.id, text: line.text })
-        });
+        }).then((r) => {
+          if (!r.ok) { btn.textContent = "\u25B6 Play"; btn.disabled = false; activePlayBtn = null; }
+        }).catch(() => { btn.textContent = "\u25B6 Play"; btn.disabled = false; activePlayBtn = null; });
       };
 
       div.appendChild(p);
