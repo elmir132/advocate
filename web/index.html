@@ -55,16 +55,19 @@
   <!-- BOTTOM: Controls -->
   <div class="bottom-panel">
     <div class="controls-left">
-      <select id="tenant-lang" aria-label="Tenant Language">
-        <option value="uk" selected>Ukrainian</option>
-        <option value="ru">Russian</option>
-        <option value="es">Spanish</option>
-        <option value="zh">Chinese</option>
-        <option value="en">English</option>
-      </select>
-      <button id="mic-btn" class="mic-btn" aria-label="Hold space to talk" title="Hold Space to talk">
-        🎤 Push to Talk
-      </button>
+      <div style="display:flex; gap:1rem; align-items:center;">
+        <select id="tenant-lang" aria-label="Tenant Language">
+          <option value="uk" selected>Ukrainian</option>
+          <option value="ru">Russian</option>
+          <option value="es">Spanish</option>
+          <option value="zh">Chinese</option>
+          <option value="en">English</option>
+        </select>
+        <button id="mic-btn" class="mic-btn" aria-label="Hold space to talk" title="Hold Space to talk">
+          🎤 Push to Talk
+        </button>
+      </div>
+      <input type="text" id="tenant-text-input" placeholder="Type tenant text (fallback)" style="margin-top:0.5rem; padding:0.5rem; border-radius:4px; border:1px solid #ccc; width:100%;" aria-label="Tenant typed fallback" />
     </div>
     
     <div class="controls-center">

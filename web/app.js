@@ -294,8 +294,19 @@ document.addEventListener("DOMContentLoaded", () => {
   elements.micBtn.addEventListener("mouseleave", stopMic);
 
   document.addEventListener("keydown", (e) => {
-    if (e.code === "Space" && !e.repeat && document.activeElement !== elements.tenantLang) {
+    // Only capture Space for mic if not in an input
+    if (e.code === "Space" && !e.repeat && e.target.tagName !== "INPUT" && e.target.tagName !== "SELECT" && e.target.tagName !== "TEXTAREA") {
       startMic();
+    }
+  });
+
+  const tenantTextInput = document.getElementById("tenant-text-input");
+  tenantTextInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && tenantTextInput.value.trim() !== "") {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "tenant_text", text: tenantTextInput.value.trim() }));
+        tenantTextInput.value = "";
+      }
     }
   });
 
