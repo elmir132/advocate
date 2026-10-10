@@ -1,0 +1,64 @@
+# Advocate backend
+
+FastAPI service for the live tenant/landlord interpreter. It uses the official `google-genai` SDK, reads `GEMINI_API_KEY` from the ignored repository-root `.env` or process environment, and never returns or logs the key. Models are selected only after the authenticated SDK `models.list()` response advertises the required action. Calls have a 30-second SDK timeout and no SDK retry loop. If Live setup fails or no audio transcription arrives within 12 seconds, buffered tenant audio is sent to text-mode `generateContent` as WAV for transcription and translation.
+
+## Confirmed model IDs
+
+Checked on 2026-10-10 with `google-genai` 1.75.0 using the key in the ignored `.env`. These IDs appeared in the authenticated model list with the stated action; code still discovers them at runtime rather than assuming a saved list remains current.
+
+| Use | Model IDs confirmed for this key | Advertised action |
+| --- | --- | --- |
+| Live interpretation | `gemini-3.8-live`, `gemini-3.8-live-extended-thinking` | `bidiGenerateContent` |
+| Text fallback / flag analysis (selection order) | `gemini-3.5-flash-lite`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-flash` | `generateContent` |
+| TTS | `gemini-3.8-flash-tts`, `gemini-3.8-flash-lite-tts` | `generateContent` |
+| Transcription (available, not selected by this backend) | `gemini-3.5-transcribe`, `gemini-3.5-transcribe-live` | `generateContent`, `bidiGenerateContent` respectively |
+| Speech translation (available, not selected by this backend) | `gemini-3.5-live-translate-preview` | `bidiGenerateContent` |
+
+The current Google model directory and the authenticated list use `gemini-3.5-live-translate-preview`; the slide shorthand `gemini-3.5-live-translate` is not the exact ID returned by the key. The other slide-named live, transcribe-live, and TTS IDs above were returned by the key. This is an availability check, not a guarantee about quota, billing, latency, or future access. To refresh the complete account-visible catalog (model IDs and supported actions only):
+
+```bash
+backend/.venv/bin/python -m backend.list_models
+```
+
+The 20-line text evaluation completed with the first selected model, `gemini-3.5-flash-lite`: micro precision `0.897`, micro recall `1.000`, promise accuracy `0.950`. A structured generation attempt on `gemini-3.8-flash` returned HTTP 504 (`DEADLINE_EXCEEDED`), so it is kept as a later candidate rather than preferred. TTS returned audio successfully. A Live text prompt also returned text/audio; however, the audio-input probe produced no transcript, so audio-to-audio translation is not claimed as end-to-end verified. The text fallback successfully transcribed and translated the official sample PCM clip.
+
+Current SDK documentation: [Live API SDK guide](https://ai.google.dev/gemini-api/docs/live-api/get-started-sdk), [model directory](https://ai.google.dev/gemini-api/docs/models), [structured output guide](https://ai.google.dev/gemini-api/docs/structured-output), and [Google Gen AI Python SDK](https://googleapis.github.io/python-genai/).
+
+## Setup and run
+
+From the repository root:
+
+```bash
+python3 -m venv backend/.venv
+backend/.venv/bin/python -m pip install -r backend/requirements.txt
+backend/.venv/bin/python -m backend.list_models
+backend/.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Put the key only in the already git-ignored repository-root `.env` as `GEMINI_API_KEY=...`. `/health` reports `live: true` when the key is present; it does not promise a model request will succeed. The key stays server-side.
+
+Run the offline tests:
+
+```bash
+backend/.venv/bin/pytest -q backend/tests eval/tests
+```
+
+Run the 20-line text-mode evaluation and write `eval/results.json`:
+
+```bash
+backend/.venv/bin/python eval/run_eval.py
+```
+
+Run its no-key fake-model path:
+
+```bash
+backend/.venv/bin/python eval/run_eval.py --dry-run
+```
+
+## Endpoints
+
+- `GET /health` returns `{"ok":true,"live":true|false}`.
+- `WS /ws` accepts the JSON message types in `CONTRACT.md`. Audio input is base64 PCM16, 16 kHz, mono. Live audio outputs are forwarded as base64 audio chunks; structured landlord analysis is separately requested in text mode and filtered to the five contract flags.
+- `POST /landlord/say` accepts `{"id":"L03","text":"..."}`. With a connected session and confirmed TTS/Live models it synthesizes the landlord line and feeds it into the Live session; otherwise it uses the text-mode translation path. It returns `{"ok":true}` on success.
+
+Conversation content is kept in memory for the current WebSocket session only. The backend does not send or sign anything. A two-language summary is generated only when that session sends `approve_summary`; summaries and notes are instructed not to provide legal advice.
