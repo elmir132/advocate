@@ -112,7 +112,7 @@ body, html {
   padding: 1rem;
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-  font-size: 1.1rem;
+  font-size: 22px;
 }
 
 .message.tenant {
@@ -198,9 +198,9 @@ body, html {
   display: inline-block;
   background-color: var(--accent-amber-light);
   color: var(--text-teal);
-  padding: 0.2rem 0.8rem;
+  padding: 0.3rem 0.8rem;
   border-radius: 16px;
-  font-size: 0.9rem;
+  font-size: 18px;
   font-weight: bold;
   margin: 0.2rem;
   border: 1px solid var(--accent-amber);
