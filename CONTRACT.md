@@ -18,6 +18,7 @@ Client to server:
 - `{"type":"start","tenant_lang":"uk"|"ru"|"es"|"zh"|"en"...}` begins a session (default "uk").
 - `{"type":"audio","data":"<base64 PCM16 16 kHz mono>"}` tenant microphone chunks.
 - `{"type":"landlord_text","id":"L03","text":"..."}` a landlord line (typed, or from the simulator).
+- `{"type":"tenant_text","text":"..."}` typed tenant line, the fallback when the microphone fails. Server treats it exactly like transcribed tenant speech.
 - `{"type":"approve_summary"}` only after the tenant approves.
 - `{"type":"stop"}`.
 
@@ -38,3 +39,6 @@ Also `POST /landlord/say` body `{"id":"L03","text":"..."}`: the landlord simulat
 
 ## Honesty rules (the UI and the model)
 Say "candidate" or "flag", never "illegal" or "you should sue". No legal advice. Show uncertainty. Nothing is sent or signed. Mock data only; no real landlord is contacted.
+
+## Serving (added later)
+The backend also serves, same origin on port 8000: `/` and `/web/*` (the `web/` folder), `/data/landlord_lines.json`, and `/eval/results.json` (404 when missing). It allows CORS from `http://127.0.0.1` and `http://localhost` on any port. The frontend uses relative URLs when `location.port === "8000"` and `http://127.0.0.1:8000` otherwise.
