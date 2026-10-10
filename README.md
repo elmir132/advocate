@@ -18,7 +18,7 @@ Open http://127.0.0.1:8000. Type a tenant line (or hold the space bar), then use
 
 ## Honest limits
 - Flags are candidates for a person to check; the model can miss or over-flag (two of the 20 lines were wrong).
-- The live speech-to-transcript path was unreliable in testing, so typed or transcribed lines go through a text route and can add a short delay.
+- Tenant speech is hold-to-speak: the clip is transcribed with a plain model call and then translated (about 2 s to the transcript, about 5 s to the translation in our tests). The Live speech-to-transcript path was unreliable, so it is off unless `ADVOCATE_TENANT_LIVE=1`. Silent or very short clips are reported instead of transcribed, because the model invents words for silence.
 - Spoken landlord audio through the Live model is off by default (`ADVOCATE_LANDLORD_AUDIO=1` turns it on) because it sometimes garbled the translation.
 - Mock landlord only. No real landlord is contacted, and there is no legal advice anywhere in the output.
 

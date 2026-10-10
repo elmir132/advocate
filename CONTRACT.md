@@ -17,6 +17,7 @@ Keys only in a git-ignored `.env` (GEMINI_API_KEY). Never print, log or commit t
 Client to server:
 - `{"type":"start","tenant_lang":"uk"|"ru"|"es"|"zh"|"en"...}` begins a session (default "uk").
 - `{"type":"audio","data":"<base64 PCM16 16 kHz mono>"}` tenant microphone chunks.
+- `{"type":"audio_end"}` the tenant released the button: transcribe what was sent now. Without it the server waits for a 0.8 s pause.
 - `{"type":"landlord_text","id":"L03","text":"..."}` a landlord line (typed, or from the simulator).
 - `{"type":"tenant_text","text":"..."}` typed tenant line, the fallback when the microphone fails. Server treats it exactly like transcribed tenant speech.
 - `{"type":"approve_summary"}` only after the tenant approves.

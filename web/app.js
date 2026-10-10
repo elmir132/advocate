@@ -64,17 +64,20 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function handleMessage(msg) {
     switch (msg.type) {
-      case "status":
-        elements.statusIndicator.textContent = msg.state.charAt(0).toUpperCase() + msg.state.slice(1);
-        if (msg.state === "listening" || msg.state === "thinking" || msg.state === "speaking") {
-          elements.waveform.classList.add("active");
-        } else {
-          elements.waveform.classList.remove("active");
-        }
+      case "status": {
+        // "listening" from the server only means the session is open, so show "Ready"
+        // unless the tenant is actually holding the button.
+        const labels = { idle: "Ready", listening: "Ready", thinking: "Working…", speaking: "Speaking" };
+        const held = elements.micBtn.classList.contains("active");
+        elements.statusIndicator.textContent = held ? "Recording" : (labels[msg.state] || "Ready");
+        document.body.dataset.state = held ? "recording" : msg.state;
+        elements.waveform.classList.toggle("active", held || msg.state === "thinking" || msg.state === "speaking");
         break;
+      }
 
       case "transcript":
         appendTranscript(msg.speaker, msg.text, msg.lang);
+        if (msg.speaker === "tenant" && window.advocateShowHint) window.advocateShowHint("", "");
         break;
 
       case "translation":
@@ -95,6 +98,7 @@ document.addEventListener("DOMContentLoaded", () => {
         
       case "error":
         console.error("Server Error:", msg.message);
+        if (window.advocateShowHint) window.advocateShowHint(msg.message, "error");
         break;
     }
   }
@@ -239,11 +243,18 @@ document.addEventListener("DOMContentLoaded", () => {
     msg.flags.forEach(flag => {
       const plainText = flagNames[flag] || flag;
       
-      // Global flag list
-      const chip = document.createElement("span");
-      chip.className = "flag-chip";
-      chip.textContent = plainText;
-      elements.flagsContainer.prepend(chip);
+      // Global flag list: group repeated cues so the panel stays scannable.
+      let chip = elements.flagsContainer.querySelector(`[data-flag="${flag}"]`);
+      if (chip) {
+        chip.dataset.count = String(Number(chip.dataset.count || "1") + 1);
+      } else {
+        chip = document.createElement("span");
+        chip.className = "flag-chip";
+        chip.dataset.flag = flag;
+        chip.dataset.count = "1";
+        chip.textContent = plainText;
+        elements.flagsContainer.prepend(chip);
+      }
 
       // Inline bubble chip
       if (bubbleFlags) {
@@ -340,94 +351,231 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  let audioContext;
-  let mediaStream;
-  let scriptProcessor;
-  let sourceNode;
+  // Keep the newest line in view: translations and flags are added after the bubble appears.
+  let scrollQueued = false;
+  new MutationObserver(() => {
+    if (scrollQueued) return;
+    scrollQueued = true;
+    requestAnimationFrame(() => {
+      scrollQueued = false;
+      elements.conversation.scrollTo({ top: elements.conversation.scrollHeight, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    });
+  }).observe(elements.conversation, { childList: true, subtree: true, characterData: true });
+
+  // ---- Microphone: hold to speak -------------------------------------------------
+  // The stream and audio graph are opened once and kept, so there is no start-up gap
+  // on every press. A short pre-roll keeps the first syllable. Releasing the button
+  // sends "audio_end" so the server transcribes at once.
+  const TARGET_RATE = 16000;
+  const MIN_HOLD_MS = 400;
+  let micCtx = null, micStream = null, micNode = null, micSource = null;
+  let micReady = null;          // promise while the mic is being opened
+  let wantRecording = false;    // the button or key is held
+  let recording = false;        // chunks are being sent
+  let holdStartedAt = 0;
+  let peakLevel = 0;
+  let preroll = [];             // last few idle chunks (Float32Array at 16 kHz)
+  const micHint = (() => {
+    let el = document.getElementById("mic-hint");
+    if (!el) {
+      el = document.createElement("p");
+      el.id = "mic-hint";
+      el.className = "mic-hint";
+      el.setAttribute("role", "status");
+      el.setAttribute("aria-live", "polite");
+      const host = document.querySelector(".controls-left") || document.body;
+      host.appendChild(el);
+    }
+    return el;
+  })();
+  let hintTimer = null;
+  function showHint(text, kind) {
+    micHint.textContent = text || "";
+    micHint.dataset.kind = kind || "";
+    clearTimeout(hintTimer);
+    if (text && kind !== "live") hintTimer = setTimeout(() => { micHint.textContent = ""; micHint.dataset.kind = ""; }, 6000);
+  }
+  window.advocateShowHint = showHint;
+
+  const bars = [...elements.waveform.querySelectorAll("i")];
+  function drawLevel(level) {
+    const v = Math.min(1, level * 6);
+    if (bars.length) {
+      bars.forEach((bar, i) => {
+        const shape = [0.55, 0.85, 1, 0.8, 0.5][i % 5];
+        bar.style.transform = `scaleY(${(0.18 + v * shape).toFixed(2)})`;
+      });
+    }
+    elements.micBtn.style.setProperty("--level", v.toFixed(2));
+  }
+
+  function resampleTo16k(input, fromRate) {
+    if (fromRate === TARGET_RATE) return new Float32Array(input);
+    const ratio = fromRate / TARGET_RATE;
+    const out = new Float32Array(Math.floor(input.length / ratio));
+    for (let i = 0; i < out.length; i++) {
+      const pos = i * ratio, i0 = Math.floor(pos), i1 = Math.min(i0 + 1, input.length - 1);
+      out[i] = input[i0] + (input[i1] - input[i0]) * (pos - i0);
+    }
+    return out;
+  }
+
+  function sendChunk(float16k) {
+    if (ws && ws.readyState === WebSocket.OPEN && float16k.length) {
+      ws.send(JSON.stringify({ type: "audio", data: base64EncodeAudio(float16k) }));
+    }
+  }
 
   function base64EncodeAudio(float32Array) {
-    const pcm16 = new Int16Array(float32Array.length);
+    const bytes = new Uint8Array(float32Array.length * 2);
+    const view = new DataView(bytes.buffer);
     for (let i = 0; i < float32Array.length; i++) {
-      let s = Math.max(-1, Math.min(1, float32Array[i]));
-      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      const s = Math.max(-1, Math.min(1, float32Array[i]));
+      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
     }
-    const buffer = new ArrayBuffer(pcm16.length * 2);
-    const view = new DataView(buffer);
-    for (let i = 0; i < pcm16.length; i++) {
-      view.setInt16(i * 2, pcm16[i], true); // little-endian
-    }
-    let binary = '';
-    const bytes = new Uint8Array(buffer);
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
     }
     return btoa(binary);
   }
 
-  async function startMic() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (elements.micBtn.classList.contains("active")) return;
-    
-    try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      elements.micBtn.classList.add("active");
-      
-      // Need 16kHz audio context
-      audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-      sourceNode = audioContext.createMediaStreamSource(mediaStream);
-      
-      // using script processor for simplicity (100ms chunks ~ 2048 at 16khz = 128ms)
-      scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
-      
-      scriptProcessor.onaudioprocess = (e) => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        const b64 = base64EncodeAudio(inputData);
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "audio", data: b64 }));
+  function openMic() {
+    if (micReady) return micReady;
+    micReady = (async () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("This page cannot use the microphone here. Open it at http://127.0.0.1:8000 in Chrome.");
+      }
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      try { micCtx = new Ctx({ sampleRate: TARGET_RATE }); } catch (e) { micCtx = new Ctx(); }
+      micSource = micCtx.createMediaStreamSource(micStream);
+      micNode = micCtx.createScriptProcessor(2048, 1, 1);
+      const silent = micCtx.createGain();
+      silent.gain.value = 0;                      // never play the microphone back
+      micNode.onaudioprocess = (e) => {
+        const chunk = resampleTo16k(e.inputBuffer.getChannelData(0), micCtx.sampleRate);
+        let sum = 0;
+        for (let i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
+        const level = Math.sqrt(sum / Math.max(1, chunk.length));
+        if (recording) {
+          peakLevel = Math.max(peakLevel, level);
+          drawLevel(level);
+          sendChunk(chunk);
+        } else {
+          preroll.push(chunk);
+          if (preroll.length > 3) preroll.shift();   // about 0.35 s
         }
       };
+      micSource.connect(micNode);
+      micNode.connect(silent);
+      silent.connect(micCtx.destination);
+      micStream.getAudioTracks().forEach((t) => { t.onended = () => { closeMic(); showHint("The microphone was disconnected.", "error"); }; });
+    })().catch((err) => {
+      micReady = null;
+      throw err;
+    });
+    return micReady;
+  }
 
-      sourceNode.connect(scriptProcessor);
-      scriptProcessor.connect(audioContext.destination);
+  function closeMic() {
+    recording = false; wantRecording = false;
+    try { if (micNode) micNode.disconnect(); if (micSource) micSource.disconnect(); } catch (e) {}
+    try { if (micStream) micStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+    try { if (micCtx) micCtx.close(); } catch (e) {}
+    micCtx = micStream = micNode = micSource = null; micReady = null; preroll = [];
+    elements.micBtn.classList.remove("active");
+  }
 
+  async function startMic() {
+    if (wantRecording) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) { showHint("Not connected yet. Wait a moment and try again.", "error"); return; }
+    wantRecording = true;
+    holdStartedAt = performance.now();
+    elements.micBtn.classList.add("active");
+    elements.micBtn.setAttribute("aria-pressed", "true");
+    showHint("Listening… keep holding while you speak.", "live");
+    elements.statusIndicator.textContent = "Recording";
+    document.body.dataset.state = "recording";
+    elements.waveform.classList.add("active");
+    // Unlock audio playback while we still have the user's gesture.
+    try {
+      if (!outAudioCtx) outAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+      if (outAudioCtx.state === "suspended") outAudioCtx.resume();
+    } catch (e) {}
+    try {
+      await openMic();
+      if (micCtx.state === "suspended") await micCtx.resume();
     } catch (err) {
-      console.error("Microphone access denied or error:", err);
-      alert("Microphone access denied. Please allow microphone access to use voice.");
+      wantRecording = false;
+      elements.micBtn.classList.remove("active");
+      elements.micBtn.setAttribute("aria-pressed", "false");
+      const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
+      showHint(denied ? "Microphone is blocked. Allow it in the address bar, then try again, or type the line."
+                      : (err && err.message) || "The microphone could not start. You can type the line instead.", "error");
+      return;
     }
+    if (!wantRecording) return;                    // released before the mic was ready: stopMic reports it
+    peakLevel = 0;
+    preroll.forEach(sendChunk);                    // keep the first syllable
+    preroll = [];
+    recording = true;
   }
 
   function stopMic() {
-    if (!elements.micBtn.classList.contains("active")) return;
+    if (!wantRecording) return;
+    wantRecording = false;
+    const wasRecording = recording;
+    recording = false;
     elements.micBtn.classList.remove("active");
-    
-    if (scriptProcessor) {
-      scriptProcessor.disconnect();
-      scriptProcessor = null;
+    elements.micBtn.setAttribute("aria-pressed", "false");
+    drawLevel(0);
+    elements.statusIndicator.textContent = wasRecording ? "Working…" : "Ready";
+    document.body.dataset.state = wasRecording ? "thinking" : "idle";
+    const held = performance.now() - holdStartedAt;
+    if (!wasRecording) {
+      showHint("Hold the button a little longer: the microphone was still starting.", "error");
+      return;
     }
-    if (sourceNode) {
-      sourceNode.disconnect();
-      sourceNode = null;
-    }
-    if (audioContext) {
-      audioContext.close();
-      audioContext = null;
-    }
-    if (mediaStream) {
-      mediaStream.getTracks().forEach(track => track.stop());
-      mediaStream = null;
-    }
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "audio_end" }));
+    if (held < MIN_HOLD_MS) showHint("That was very short. Hold the button while you speak, then let go.", "error");
+    else if (peakLevel < 0.004) showHint("No sound reached the microphone. Check the input device in your system settings.", "error");
+    else showHint("Got it. Transcribing…", "live");
   }
 
-  elements.micBtn.addEventListener("mousedown", startMic);
-  elements.micBtn.addEventListener("mouseup", stopMic);
-  elements.micBtn.addEventListener("mouseleave", stopMic);
-
-  document.addEventListener("keydown", (e) => {
-    // Only capture Space for mic if not in an input
-    if (e.code === "Space" && !e.repeat && e.target.tagName !== "INPUT" && e.target.tagName !== "SELECT" && e.target.tagName !== "TEXTAREA") {
-      startMic();
-    }
+  // Pointer events cover mouse, touch and pen. Capturing the pointer means sliding
+  // off the button no longer cuts the recording short.
+  elements.micBtn.addEventListener("pointerdown", (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    try { elements.micBtn.setPointerCapture(e.pointerId); } catch (err) {}
+    startMic();
   });
+  ["pointerup", "pointercancel", "lostpointercapture"].forEach((name) => elements.micBtn.addEventListener(name, stopMic));
+  elements.micBtn.addEventListener("click", (e) => e.preventDefault());
+  elements.micBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  const typingTarget = (t) => t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+  let spaceHeld = false;
+  document.addEventListener("keydown", (e) => {
+    if (e.code !== "Space" || typingTarget(e.target)) return;
+    e.preventDefault();                            // no page scroll, no button "click"
+    if (e.repeat || spaceHeld) return;
+    spaceHeld = true;
+    startMic();
+  });
+  document.addEventListener("keyup", (e) => {
+    if (e.code !== "Space") return;
+    if (!spaceHeld) return;
+    spaceHeld = false;
+    e.preventDefault();
+    stopMic();
+  });
+  window.addEventListener("blur", () => { spaceHeld = false; stopMic(); });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) { spaceHeld = false; stopMic(); } });
+  window.addEventListener("pagehide", closeMic);
 
   const tenantTextInput = document.getElementById("tenant-text-input");
   tenantTextInput.addEventListener("keydown", (e) => {
@@ -435,13 +583,10 @@ document.addEventListener("DOMContentLoaded", () => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "tenant_text", text: tenantTextInput.value.trim() }));
         tenantTextInput.value = "";
+        showHint("Sent. Translating…", "live");
+      } else {
+        showHint("Not connected yet. Wait a moment and try again.", "error");
       }
-    }
-  });
-
-  document.addEventListener("keyup", (e) => {
-    if (e.code === "Space") {
-      stopMic();
     }
   });
 

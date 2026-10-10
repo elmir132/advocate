@@ -330,6 +330,44 @@ class GeminiGateway:
             payload = {**payload, "translation": plain}
         return normalize_analysis(payload, line_id)
 
+    async def transcribe_tenant_audio(self, pcm16: bytes, tenant_lang: str) -> str | None:
+        """Plain-text transcription of one held-to-talk utterance (16 kHz mono PCM16).
+
+        Returns None when the model is unavailable or says there was no speech.
+        """
+        await self.discover_models()
+        model = self.select_model("generateContent", TEXT_CANDIDATES)
+        if not model or self.client is None:
+            return None
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(16000)
+            wav_file.writeframes(pcm16)
+        audio_part = types.Part.from_bytes(data=wav_buffer.getvalue(), mime_type="audio/wav")
+        prompt = (
+            f"Transcribe this speech verbatim in its original language (expected language code: {tenant_lang}). "
+            "Reply with the transcript only. If there is no intelligible speech, reply with the single word NOSPEECH."
+        )
+
+        def request() -> str | None:
+            response = self.client.models.generate_content(
+                model=model,
+                contents=[prompt, audio_part],
+                config=types.GenerateContentConfig(temperature=0.0),
+            )
+            return response.text
+
+        try:
+            out = await call_with_service_retries(request)
+        except Exception:
+            return None
+        out = (out or "").strip()
+        if not out or "NOSPEECH" in out.upper():
+            return None
+        return out
+
     async def translate_tenant_audio(self, pcm16: bytes, tenant_lang: str) -> dict[str, str] | None:
         """Generate-content fallback for a failed/unavailable Live API call."""
         await self.discover_models()

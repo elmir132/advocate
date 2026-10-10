@@ -103,16 +103,22 @@ def test_live_audio_watchdog_uses_text_fallback_without_network(monkeypatch):
         async def send_json(self, message):
             self.messages.append(message)
 
-    async def fake_translate(_audio, _language):
-        return {"transcript": "A spoken request.", "translation": "A request."}
+    async def fake_transcribe(_audio, _language):
+        return "A spoken request."
+
+    async def fake_translate_text(_text, _language):
+        return "A request."
 
     monkeypatch.setattr("backend.main.LIVE_AUDIO_GRACE_SECONDS", 0)
     monkeypatch.setattr("backend.main.FALLBACK_QUIET_SECONDS", 0)
-    monkeypatch.setattr(gateway, "translate_tenant_audio", fake_translate)
+    monkeypatch.setattr(gateway, "transcribe_tenant_audio", fake_transcribe)
+    monkeypatch.setattr(gateway, "translate_tenant_text", fake_translate_text)
 
     async def run():
         state = ConnectionState(FakeWebSocket())
-        state.unconfirmed_live_audio.extend(b"\x00\x00")
+        state.started = True
+        # One second of a loud square wave, so the silence and too-short checks pass.
+        state.unconfirmed_live_audio.extend((b"\x00\x20" * 80 + b"\x00\xe0" * 80) * 100)
         await _watch_live_audio(state)
         await state.fallback_worker
         assert state.live_failed is True
@@ -225,3 +231,46 @@ def test_serving_routes_and_cors_contract(monkeypatch, tmp_path):
         )
         assert preflight.status_code == 200
         assert preflight.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_silent_and_too_short_clips_are_reported_not_transcribed(monkeypatch):
+    from backend.main import schedule_text_fallback
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.messages = []
+
+        async def send_json(self, message):
+            self.messages.append(message)
+
+    called = []
+
+    async def fake_transcribe(_audio, _language):
+        called.append(1)
+        return "should not happen"
+
+    monkeypatch.setattr("backend.main.FALLBACK_QUIET_SECONDS", 0)
+    monkeypatch.setattr(gateway, "transcribe_tenant_audio", fake_transcribe)
+
+    async def run():
+        import asyncio
+
+        state = ConnectionState(FakeWebSocket())
+        state.started = True
+        schedule_text_fallback(state, b"\x00\x00" * 16000)  # one second of silence
+        await state.fallback_worker
+        schedule_text_fallback(state, b"\x00\x20" * 100)  # far too short
+        await state.fallback_worker
+        errors = [m["message"] for m in state.websocket.messages if m.get("type") == "error"]
+        assert any("No speech" in e for e in errors) and any("too short" in e for e in errors)
+        assert called == []
+
+    import asyncio
+
+    asyncio.run(run())
+
+
+def test_audio_end_is_an_accepted_message():
+    from backend.main import validate_client_message
+
+    assert validate_client_message({"type": "audio_end"})["type"] == "audio_end"

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from array import array
 import os
 import base64
 import binascii
@@ -37,6 +39,10 @@ MAX_BUFFERED_AUDIO_BYTES = 2_000_000
 MAX_TEXT_CHARS = 8_000
 LIVE_AUDIO_GRACE_SECONDS = 12.0
 FALLBACK_QUIET_SECONDS = 0.8
+# Tenant speech goes through the reliable transcribe-then-translate route unless this is "1".
+TENANT_LIVE_AUDIO = os.environ.get("ADVOCATE_TENANT_LIVE") == "1"
+MIN_SPEECH_BYTES = 16000 * 2 * 4 // 10  # 0.4 s of 16 kHz PCM16
+SILENCE_RMS = 180  # below this the clip is treated as silence (int16 scale)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WEB_DIR = REPO_ROOT / "web"
 LANDLORD_LINES_PATH = REPO_ROOT / "data" / "landlord_lines.json"
@@ -110,7 +116,7 @@ def validate_client_message(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict) or not isinstance(payload.get("type"), str):
         raise ClientMessageError("Expected a JSON object with a message type.")
     kind = payload["type"]
-    if kind not in {"start", "audio", "landlord_text", "tenant_text", "approve_summary", "stop"}:
+    if kind not in {"start", "audio", "audio_end", "landlord_text", "tenant_text", "approve_summary", "stop"}:
         raise ClientMessageError("Unsupported message type.")
     if kind == "start":
         language = payload.get("tenant_lang", "uk")
@@ -397,32 +403,41 @@ def confirm_live_audio(state: ConnectionState) -> None:
     state.live_audio_watchdog = None
 
 
+def pcm_rms(pcm16: bytes) -> float:
+    """Root-mean-square level of little-endian PCM16, used to tell silence from speech."""
+    samples = array("h")
+    samples.frombytes(pcm16[: len(pcm16) - (len(pcm16) % 2)])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    if not samples:
+        return 0.0
+    step = max(1, len(samples) // 20000)
+    picked = samples[::step]
+    return (sum(v * v for v in picked) / len(picked)) ** 0.5
+
+
 async def _fallback_worker(state: ConnectionState) -> None:
     while state.fallback_audio:
         quiet_for = time.monotonic() - state.last_fallback_audio_at
         if quiet_for < FALLBACK_QUIET_SECONDS:
             await asyncio.sleep(FALLBACK_QUIET_SECONDS - quiet_for)
+            continue
         audio = bytes(state.fallback_audio)
         state.fallback_audio.clear()
+        if len(audio) < MIN_SPEECH_BYTES:
+            await state.error("That was too short to hear. Hold the button while you speak, then let go.")
+            await state.status("listening")
+            continue
+        if pcm_rms(audio) < SILENCE_RMS:
+            await state.error("No speech was picked up. Check that the right microphone is selected and try again.")
+            await state.status("listening")
+            continue
         await state.status("thinking")
-        fallback = await gateway.translate_tenant_audio(audio, state.tenant_lang)
-        if fallback:
-            state.history.append(
-                {"speaker": "tenant", "lang": state.tenant_lang, "text": fallback["transcript"]}
-            )
-            await state.send(
-                {
-                    "type": "transcript",
-                    "speaker": "tenant",
-                    "lang": state.tenant_lang,
-                    "text": fallback["transcript"],
-                }
-            )
-            await state.send(
-                {"type": "translation", "to": "landlord", "text": fallback["translation"]}
-            )
+        transcript = await gateway.transcribe_tenant_audio(audio, state.tenant_lang)
+        if transcript:
+            await send_tenant_text(state, transcript)
         else:
-            await state.error("Live interpretation is unavailable; please try again in a moment.")
+            await state.error("I could not make out any words. Please try again, or type the line.")
         await state.status("listening")
 
 
@@ -596,8 +611,11 @@ async def websocket_session(websocket: WebSocket) -> None:
                 if not state.started:
                     await state.error("Start a session before sending audio.")
                     continue
-                await state.status("thinking")
                 audio = payload["_audio_bytes"]
+                if not TENANT_LIVE_AUDIO:
+                    schedule_text_fallback(state, audio)
+                    continue
+                await state.status("thinking")
                 if state.live_session is not None and not state.live_failed:
                     if not state.live_audio_confirmed:
                         if len(state.unconfirmed_live_audio) + len(audio) <= MAX_BUFFERED_AUDIO_BYTES:
@@ -625,6 +643,12 @@ async def websocket_session(websocket: WebSocket) -> None:
                 elif state.live_session is None or state.live_failed:
                     schedule_text_fallback(state, audio)
                 await state.status("listening")
+            elif kind == "audio_end":
+                # The tenant let go of the button: transcribe now instead of waiting for a pause.
+                if state.fallback_audio:
+                    state.last_fallback_audio_at = 0.0
+                    if state.fallback_worker is None or state.fallback_worker.done():
+                        state.fallback_worker = asyncio.create_task(_fallback_worker(state))
             elif kind == "landlord_text":
                 if not state.started:
                     await state.error("Start a session before sending landlord lines.")

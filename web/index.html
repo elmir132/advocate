@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Advocate</title>
+  <meta name="theme-color" content="#0b5147">
+  <title>Advocate — Live tenant interpreter</title>
   <link rel="stylesheet" href="style.css">
   <script>
     if (window.location.search.includes("mock=1")) {
@@ -12,106 +13,100 @@
   </script>
 </head>
 <body id="app">
-  <div id="connection-overlay" class="hidden">
+  <div id="connection-overlay" class="hidden" role="alertdialog" aria-modal="true" aria-labelledby="connection-title">
     <div class="overlay-content">
-      <p>Connection lost.</p>
-      <button id="retry-btn">Retry Connection</button>
+      <span class="overlay-icon" aria-hidden="true">!</span>
+      <h2 id="connection-title">Connection interrupted</h2>
+      <p>Your conversation is still on this screen. Reconnect to continue.</p>
+      <button id="retry-btn">Try again</button>
     </div>
   </div>
 
   <header class="app-header">
-    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><h1>Advocate</h1></div>
-    <span class="tagline">Speak up, in any language</span>
-    <span class="beta-note">Not legal advice</span>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div class="brand-copy"><h1>Advocate</h1><span class="tagline">Speak up, in any language</span></div>
+    </div>
+    <span class="beta-note"><span aria-hidden="true">●</span> Not legal advice</span>
   </header>
 
-  <div class="main-layout">
-    <!-- LEFT: Conversation -->
-    <div class="left-panel">
-      <div class="status-bar">
-        <span class="status-dot" aria-hidden="true"></span><span id="status-indicator">Listening</span>
-        <div id="waveform" class="waveform"></div>
+  <main class="main-layout">
+    <section class="left-panel" aria-labelledby="conversation-title">
+      <div class="conversation-heading">
+        <div><span class="eyebrow">Live interpreter</span><h2 id="conversation-title">Conversation</h2></div>
+        <div class="status-bar" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="status-indicator">Listening</span>
+          <div id="waveform" class="waveform" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
       </div>
-      <div id="conversation" class="conversation" aria-live="polite">
+      <div id="conversation" class="conversation" aria-live="polite" aria-relevant="additions">
         <div id="empty-state" class="empty-state">
-          Hold the space bar and speak, or open the landlord simulator and press play on a line
+          <span class="empty-state-mark" aria-hidden="true"></span>
+          <strong>Start with your own words.</strong>
+          <span>Hold Space to speak, type a message below, or play a landlord line from the simulator.</span>
         </div>
-        <!-- Chat bubbles appear here -->
       </div>
-    </div>
+    </section>
 
-    <!-- RIGHT: Advocate Panel -->
-    <div class="right-panel">
-      <div class="tabs">
-        <button id="tab-advocate" class="tab active" aria-selected="true">Advocate</button>
-        <button id="tab-simulator" class="tab" aria-selected="false">Simulator</button>
-        <button id="tab-score" class="tab" aria-selected="false">Score</button>
+    <aside class="right-panel" aria-label="Conversation advocate">
+      <div class="rail-heading">
+        <span class="eyebrow">Conversation support</span>
+        <p>Important details are collected here for you to review—not decided for you.</p>
       </div>
-      
-      <div id="advocate-view" class="tab-content active">
-        <div id="promises-list" class="promises-list">
-          <h3>Promises so far</h3>
+      <div class="tabs" role="tablist" aria-label="Support tools">
+        <button id="tab-advocate" class="tab active" role="tab" aria-selected="true" aria-controls="advocate-view">Advocate</button>
+        <button id="tab-simulator" class="tab" role="tab" aria-selected="false" aria-controls="simulator-view">Simulator</button>
+        <button id="tab-score" class="tab" role="tab" aria-selected="false" aria-controls="score-view">Evaluation</button>
+      </div>
+
+      <div id="advocate-view" class="tab-content active" role="tabpanel" aria-labelledby="tab-advocate">
+        <section class="insight-block promises-list">
+          <div class="section-title"><span class="section-icon promise-icon" aria-hidden="true"></span><h3>Promises so far</h3></div>
           <ul id="promises-ul"></ul>
-        </div>
-        <div id="flags-list" class="flags-list">
-          <h3>Recent Flags</h3>
-          <div id="flags-container"></div>
-        </div>
+        </section>
+        <section class="insight-block flags-list">
+          <div class="section-title"><span class="section-icon flag-icon" aria-hidden="true"></span><h3>Details to review</h3></div>
+          <div id="flags-container" class="flags-container"></div>
+        </section>
+        <p class="rail-note">Flags are conversation cues, not legal conclusions.</p>
       </div>
 
-      <div id="simulator-view" class="tab-content hidden">
-        <h3>Landlord Simulator</h3>
-        <div id="simulator-lines" class="simulator-lines-flat">
-          <!-- Populated from mock.js window.landlordLines -->
-        </div>
+      <div id="simulator-view" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-simulator">
+        <div class="view-heading"><h3>Landlord simulator</h3><p>Play a sample line to demonstrate translation and review cues.</p></div>
+        <div id="simulator-lines" class="simulator-lines-flat"></div>
       </div>
 
-      <div id="score-view" class="tab-content hidden">
-        <h3>Evaluation Score</h3>
-        <pre id="score-output">Loading results...</pre>
+      <div id="score-view" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-score">
+        <div class="view-heading"><h3>Small scripted evaluation</h3><p>Results from 20 lines written for this prototype—not a benchmark.</p></div>
+        <pre id="score-output">Loading results…</pre>
       </div>
-    </div>
-  </div>
+    </aside>
+  </main>
 
-  <!-- BOTTOM: Controls -->
-  <div class="bottom-panel">
+  <section class="bottom-panel" aria-label="Conversation controls">
     <div class="controls-left">
       <div class="controls-left-top">
-        <select id="tenant-lang" aria-label="Tenant Language">
-          <option value="uk" selected>Ukrainian</option>
-          <option value="ru">Russian</option>
-          <option value="es">Spanish</option>
-          <option value="zh">Chinese</option>
-          <option value="en">English</option>
-        </select>
-        <button id="mic-btn" class="mic-btn" aria-label="Hold space to talk" title="Hold Space to talk">
-          🎤 Push to Talk
-        </button>
-        <label id="mute-toggle-label" class="mute-label">
-          <input type="checkbox" id="mute-toggle" /> Mute Audio
-        </label>
+        <label class="select-wrap"><span class="sr-only">Tenant language</span><select id="tenant-lang" aria-label="Tenant language"><option value="uk" selected>Ukrainian</option><option value="ru">Russian</option><option value="es">Spanish</option><option value="zh">Chinese</option><option value="en">English</option></select></label>
+        <button id="mic-btn" class="mic-btn" aria-label="Hold to speak" title="Hold Space to speak"><span class="mic-icon" aria-hidden="true"></span><span>Hold to speak</span><kbd>Space</kbd></button>
+        <label id="mute-toggle-label" class="mute-label"><input type="checkbox" id="mute-toggle"><span>Mute voice</span></label>
       </div>
-      <input type="text" id="tenant-text-input" placeholder="Or type what the tenant says" aria-label="Tenant typed fallback" />
+      <div class="text-input-wrap"><input type="text" id="tenant-text-input" placeholder="Type the tenant’s message" aria-label="Tenant typed fallback"><kbd>Enter</kbd></div>
     </div>
-    
-    <div class="controls-center">
-    </div>
-
     <div class="controls-right">
-      <button id="approve-btn" disabled>Approve and prepare summary</button>
+      <div class="approval-copy"><strong>Conversation record</strong><span>Review before anything is prepared.</span></div>
+      <button id="approve-btn" disabled>Approve summary <span aria-hidden="true">→</span></button>
     </div>
-  </div>
+  </section>
 
-  <footer>
-    <p>Not legal advice. Flags are candidates. Nothing is sent.</p>
-  </footer>
+  <footer><p>Speech and text are processed by Gemini <span>•</span> Flags are candidates <span>•</span> Nothing is sent to anyone</p></footer>
 
-  <!-- Modal for Summary -->
   <dialog id="summary-dialog">
     <div class="dialog-content">
-      <h2>Summary</h2>
+      <span class="eyebrow">Tenant approved</span>
+      <h2>Conversation summary</h2>
       <div id="summary-content"></div>
-      <button id="close-summary">Close</button>
+      <button id="close-summary">Close summary</button>
     </div>
   </dialog>
 
