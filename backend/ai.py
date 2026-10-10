@@ -356,7 +356,13 @@ class GeminiGateway:
             return None
         prompt = (
             f"Prepare a concise, factual, two-language summary of this housing conversation, first in "
-            f"{tenant_lang}, then in English. Include only stated promises and flagged topics. "
+            f"{tenant_lang}, then in English. Use exactly these three headings in each language: "
+            "Promises (only landlord lines whose record has promise true, stated as the landlord said them), "
+            "Not a commitment (landlord lines flagged vague_commitment: say they were vague and were not a promise), "
+            "and Money terms, penalties and rules (lines flagged financial_term, penalty or restriction, with the amounts and conditions stated). "
+            "Never list a vague_commitment line under Promises. Write None under a heading with no lines. "
+            "For the tenant-language section, copy the tenant-language wording of each line verbatim from the translation record that follows that landlord line; "
+            "if a line has no translation record, translate it carefully and literally. Never invent or paraphrase words, and write real words only. "
             "Do not infer facts, decide legality, give legal advice, or suggest what the tenant should do. "
             "This is not an agreement or legal document. Return JSON with markdown and languages.\n"
             f"Conversation records:\n{json.dumps(conversation, ensure_ascii=False)}"

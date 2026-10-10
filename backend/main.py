@@ -461,8 +461,11 @@ async def send_landlord_line(state: ConnectionState, line_id: str, text: str) ->
     async with state.command_lock:
         state.summary_approved = False
         await state.status("thinking")
-        state.history.append({"speaker": "landlord", "lang": "en", "text": text})
+        entry: dict[str, Any] = {"speaker": "landlord", "lang": "en", "text": text}
+        state.history.append(entry)
         result = await gateway.analyze_landlord_line(line_id, text, state.tenant_lang)
+        entry["flags"] = result["flags"]
+        entry["promise"] = result["promise"]
         await state.send({"type": "transcript", "speaker": "landlord", "lang": "en", "text": text})
         await state.send(
             {
