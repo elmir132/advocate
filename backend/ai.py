@@ -90,10 +90,22 @@ def is_retryable_service_error(error: Exception) -> bool:
     return isinstance(message, str) and "overload" in message.lower()
 
 
+class UsageLimitError(RuntimeError):
+    """Raised when this server run has used its allowance of model calls."""
+
+
+# A public demo link must not be able to burn the whole quota: cap model calls per server run.
+MAX_MODEL_CALLS = int(os.environ.get("ADVOCATE_MAX_MODEL_CALLS", "1500"))
+usage = {"model_calls": 0}
+
+
 async def call_with_service_retries(
     operation: Callable[[], Any], *, threaded: bool = True
 ) -> Any:
     """Run at most three times, pausing briefly only for 503/overload failures."""
+    if usage["model_calls"] >= MAX_MODEL_CALLS:
+        raise UsageLimitError("The demo allowance of model calls is used up.")
+    usage["model_calls"] += 1
     for attempt in range(SERVICE_MAX_ATTEMPTS):
         try:
             if threaded:

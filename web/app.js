@@ -1,5 +1,8 @@
 document.addEventListener("DOMContentLoaded", () => {
-  const isServedByBackend = window.location.port === "8000";
+  // Same origin whenever the page comes from the server (local port 8000 or a public https link).
+  // Only a file:// page or a separate dev server falls back to the local backend address.
+  const devPorts = ["3000", "5173", "5500", "8080"];
+  const isServedByBackend = window.location.protocol.startsWith("http") && !devPorts.includes(window.location.port);
   const API_BASE = isServedByBackend ? "" : "http://127.0.0.1:8000";
   const WS_BASE = isServedByBackend 
     ? (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host + "/ws"
@@ -378,11 +381,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // sends "audio_end" so the server transcribes at once.
   const TARGET_RATE = 16000;
   const MIN_HOLD_MS = 400;
+  const TAP_TO_LOCK_MS = 320;
   let micCtx = null, micStream = null, micNode = null, micSource = null;
   let micReady = null;          // promise while the mic is being opened
   let wantRecording = false;    // the button or key is held
   let recording = false;        // chunks are being sent
   let holdStartedAt = 0;
+  let latchedRecording = false;
   let peakLevel = 0;
   let preroll = [];             // last few idle chunks (Float32Array at 16 kHz)
   const micHint = (() => {
@@ -406,6 +411,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (text && kind !== "live") hintTimer = setTimeout(() => { micHint.textContent = ""; micHint.dataset.kind = ""; }, 6000);
   }
   window.advocateShowHint = showHint;
+
+  const micLabel = elements.micBtn.querySelector(".mic-label");
+  function setLatchedRecording(active) {
+    latchedRecording = active;
+    elements.micBtn.dataset.latched = String(active);
+    if (micLabel) micLabel.textContent = active ? "Tap to stop" : "Hold or tap";
+    elements.micBtn.setAttribute("aria-label", active ? "Recording hands-free. Tap to stop" : "Hold or tap to speak");
+    elements.micBtn.title = active ? "Tap to stop recording" : "Hold Space, or tap for hands-free recording";
+  }
 
   const bars = [...elements.waveform.querySelectorAll("i")];
   function drawLevel(level) {
@@ -492,6 +506,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function closeMic() {
     recording = false; wantRecording = false;
+    setLatchedRecording(false);
     try { if (micNode) micNode.disconnect(); if (micSource) micSource.disconnect(); } catch (e) {}
     try { if (micStream) micStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
     try { if (micCtx) micCtx.close(); } catch (e) {}
@@ -506,7 +521,7 @@ document.addEventListener("DOMContentLoaded", () => {
     holdStartedAt = performance.now();
     elements.micBtn.classList.add("active");
     elements.micBtn.setAttribute("aria-pressed", "true");
-    showHint("Listening… keep holding while you speak.", "live");
+    showHint("Listening… hold to talk, or release quickly for hands-free recording.", "live");
     elements.statusIndicator.textContent = "Recording";
     document.body.dataset.state = "recording";
     elements.waveform.classList.add("active");
@@ -520,6 +535,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (micCtx.state === "suspended") await micCtx.resume();
     } catch (err) {
       wantRecording = false;
+      setLatchedRecording(false);
       elements.micBtn.classList.remove("active");
       elements.micBtn.setAttribute("aria-pressed", "false");
       const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
@@ -537,6 +553,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function stopMic() {
     if (!wantRecording) return;
     wantRecording = false;
+    setLatchedRecording(false);
     const wasRecording = recording;
     recording = false;
     elements.micBtn.classList.remove("active");
@@ -572,15 +589,39 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Pointer events cover mouse, touch and pen. Capturing the pointer means sliding
-  // off the button no longer cuts the recording short.
+  // Pointer events support both familiar patterns on one control:
+  // hold and release for push-to-talk, or tap once to latch and tap again to stop.
+  let pointerActive = false;
+  let pointerStartedAt = 0;
   elements.micBtn.addEventListener("pointerdown", (e) => {
     if (e.button !== undefined && e.button !== 0) return;
     e.preventDefault();
+    if (latchedRecording) {
+      pointerActive = false;
+      stopMic();
+      return;
+    }
+    pointerActive = true;
+    pointerStartedAt = performance.now();
     try { elements.micBtn.setPointerCapture(e.pointerId); } catch (err) {}
     startMic();
   });
-  ["pointerup", "pointercancel", "lostpointercapture"].forEach((name) => elements.micBtn.addEventListener(name, stopMic));
+  elements.micBtn.addEventListener("pointerup", (e) => {
+    if (!pointerActive) return;
+    e.preventDefault();
+    pointerActive = false;
+    if (performance.now() - pointerStartedAt <= TAP_TO_LOCK_MS && wantRecording) {
+      setLatchedRecording(true);
+      showHint("Recording hands-free. Tap again to stop.", "live");
+      return;
+    }
+    stopMic();
+  });
+  ["pointercancel", "lostpointercapture"].forEach((name) => elements.micBtn.addEventListener(name, () => {
+    if (!pointerActive) return;
+    pointerActive = false;
+    stopMic();
+  }));
   elements.micBtn.addEventListener("click", (e) => e.preventDefault());
   elements.micBtn.addEventListener("contextmenu", (e) => e.preventDefault());
 
@@ -648,14 +689,12 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.disabled = true;
         activePlayBtn = btn;
         
-        const _fetch2 = window.OriginalFetch || window.fetch;
-        _fetch2(API_BASE + "/landlord/say", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: line.id, text: line.text })
-        }).then((r) => {
-          if (!r.ok) { btn.textContent = "\u25B6 Play"; btn.disabled = false; activePlayBtn = null; }
-        }).catch(() => { btn.textContent = "\u25B6 Play"; btn.disabled = false; activePlayBtn = null; });
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "landlord_text", id: line.id, text: line.text }));
+        } else {
+          btn.textContent = "\u25B6 Play"; btn.disabled = false; activePlayBtn = null;
+          if (window.advocateShowHint) window.advocateShowHint("Not connected yet. Wait a moment and try again.", "error");
+        }
       };
 
       div.appendChild(p);

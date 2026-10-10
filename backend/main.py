@@ -38,6 +38,7 @@ MAX_AUDIO_BYTES = 512_000
 MAX_BUFFERED_AUDIO_BYTES = 2_000_000
 MAX_TEXT_CHARS = 8_000
 LIVE_AUDIO_GRACE_SECONDS = 12.0
+MAX_SESSIONS = int(os.environ.get("ADVOCATE_MAX_SESSIONS", "12"))  # concurrent visitors on a shared demo link
 FALLBACK_QUIET_SECONDS = 0.8
 # Tenant speech goes through the reliable transcribe-then-translate route unless this is "1".
 TENANT_LIVE_AUDIO = os.environ.get("ADVOCATE_TENANT_LIVE") == "1"
@@ -597,13 +598,20 @@ async def send_tenant_text(state: ConnectionState, text: str) -> None:
 
 
 @app.get("/health")
-async def health() -> dict[str, bool]:
-    return {"ok": True, "live": gateway.key_present}
+async def health() -> dict[str, Any]:
+    from .ai import MAX_MODEL_CALLS, usage
+
+    return {"ok": True, "live": gateway.key_present, "sessions": len(hub.sessions),
+            "model_calls": usage["model_calls"], "model_call_limit": MAX_MODEL_CALLS}
 
 
 @app.websocket("/ws")
 async def websocket_session(websocket: WebSocket) -> None:
     await websocket.accept()
+    if len(hub.sessions) >= MAX_SESSIONS:
+        await websocket.send_json({"type": "error", "message": "The demo is busy right now. Please try again in a minute."})
+        await websocket.close()
+        return
     state = ConnectionState(websocket)
     await hub.add(state)
     await state.status("idle")

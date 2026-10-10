@@ -84,7 +84,9 @@ def test_health_contract_does_not_call_google():
     with TestClient(app) as client:
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json() == {"ok": True, "live": gateway.key_present}
+        body = response.json()
+        assert body["ok"] is True and body["live"] == gateway.key_present
+        assert body["model_calls"] <= body["model_call_limit"]
 
 
 def test_websocket_idle_and_stop_without_live_api():
@@ -345,3 +347,23 @@ def test_transcription_parser_uses_the_script_when_it_can():
     assert parse_transcription("en\nКоли ремонт?", "uk")["lang"] == "uk"
     assert parse_transcription("es\nHola, ¿qué tal?", "es")["lang"] == "es"
     assert parse_transcription("NOSPEECH", "uk") is None
+
+
+def test_model_call_cap_stops_further_calls(monkeypatch):
+    import asyncio
+
+    from backend import ai
+
+    monkeypatch.setattr(ai, "MAX_MODEL_CALLS", 2)
+    monkeypatch.setitem(ai.usage, "model_calls", 0)
+
+    async def run():
+        assert await ai.call_with_service_retries(lambda: "a") == "a"
+        assert await ai.call_with_service_retries(lambda: "b") == "b"
+        try:
+            await ai.call_with_service_retries(lambda: "c")
+        except ai.UsageLimitError:
+            return True
+        return False
+
+    assert asyncio.run(run()) is True
