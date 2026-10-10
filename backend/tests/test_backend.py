@@ -5,7 +5,7 @@ import wave
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.ai import normalize_analysis, wav_to_pcm16k
+from backend.ai import normalize_analysis, wav_to_pcm16k, wav_to_pcm24k
 from backend.main import (
     ConnectionState,
     _watch_live_audio,
@@ -52,6 +52,17 @@ def test_tts_wav_converter_rejects_empty_audio():
         wav_to_pcm16k(buffer.getvalue())
 
 
+def test_wav_converter_strips_header_for_browser_pcm24k():
+    samples = b"\x01\x00\x02\x00\x03\x00"
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(24000)
+        wav_file.writeframes(samples)
+    assert wav_to_pcm24k(buffer.getvalue()) == samples
+
+
 def test_client_message_validation():
     start = validate_client_message({"type": "start"})
     assert start["tenant_lang"] == "uk"
@@ -62,6 +73,11 @@ def test_client_message_validation():
         validate_client_message({"type": "audio", "data": "not base64!"})
     with pytest.raises(ValueError, match="Unsupported"):
         validate_client_message({"type": "exec"})
+    assert validate_client_message({"type": "tenant_text", "text": "Please repair the heater."})[
+        "text"
+    ] == "Please repair the heater."
+    with pytest.raises(ValueError, match="Tenant text"):
+        validate_client_message({"type": "tenant_text", "text": "  "})
 
 
 def test_health_contract_does_not_call_google():
@@ -150,3 +166,62 @@ def test_summary_is_generated_only_after_approval_without_network(monkeypatch):
             approval_messages = [websocket.receive_json() for _ in range(3)]
             summary = next(message for message in approval_messages if message["type"] == "summary")
             assert summary["languages"] == ["uk", "en"]
+
+
+def test_typed_tenant_text_is_transcript_then_english_translation(monkeypatch):
+    async def fake_start(_state):
+        return None
+
+    async def fake_translation(text, language):
+        assert text == "Будь ласка, полагодьте опалення."
+        assert language == "uk"
+        return "Please repair the heating."
+
+    monkeypatch.setattr("backend.main.start_live_session", fake_start)
+    monkeypatch.setattr(gateway, "translate_tenant_text", fake_translation)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            assert websocket.receive_json() == {"type": "status", "state": "idle"}
+            websocket.send_json({"type": "start", "tenant_lang": "uk"})
+            assert websocket.receive_json()["state"] == "thinking"
+            assert websocket.receive_json()["state"] == "listening"
+            websocket.send_json({"type": "tenant_text", "text": "Будь ласка, полагодьте опалення."})
+            messages = [websocket.receive_json() for _ in range(4)]
+            assert messages[0] == {"type": "status", "state": "thinking"}
+            assert messages[1] == {
+                "type": "transcript",
+                "speaker": "tenant",
+                "lang": "uk",
+                "text": "Будь ласка, полагодьте опалення.",
+            }
+            assert messages[2] == {
+                "type": "translation",
+                "to": "landlord",
+                "text": "Please repair the heating.",
+            }
+            assert messages[3] == {"type": "status", "state": "listening"}
+
+
+def test_serving_routes_and_cors_contract(monkeypatch, tmp_path):
+    missing_results = tmp_path / "missing-results.json"
+    monkeypatch.setattr("backend.main.EVAL_RESULTS_PATH", missing_results)
+    with TestClient(app) as client:
+        root = client.get("/")
+        assert root.status_code == 200
+        assert "Advocate" in root.text
+        assert '<base href="/web/">' in root.text
+        assert client.get("/web/style.css").status_code == 200
+        assert client.get("/web/app.js").status_code == 200
+        assert client.get("/data/landlord_lines.json").status_code == 200
+        assert client.get("/eval/results.json").status_code == 404
+
+        preflight = client.options(
+            "/data/landlord_lines.json",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert preflight.status_code == 200
+        assert preflight.headers["access-control-allow-origin"] == "http://localhost:5173"

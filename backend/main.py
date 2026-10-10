@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -149,11 +149,13 @@ app.add_middleware(
 
 
 @app.get("/")
-async def serve_frontend() -> FileResponse:
+async def serve_frontend() -> HTMLResponse:
     index = WEB_DIR / "index.html"
     if not index.is_file():
         raise HTTPException(status_code=404, detail="Frontend not found.")
-    return FileResponse(index)
+    document = index.read_text(encoding="utf-8")
+    document = document.replace("<head>", '<head>\n  <base href="/web/">', 1)
+    return HTMLResponse(document)
 
 
 @app.get("/data/landlord_lines.json")
@@ -221,7 +223,11 @@ async def read_live_session(state: ConnectionState) -> None:
                 continue
             input_speaker = state.live_input_speaker
             input_transcription = getattr(content, "input_transcription", None)
-            if input_transcription and getattr(input_transcription, "text", None):
+            if (
+                input_transcription
+                and getattr(input_transcription, "text", None)
+                and state.pending_tenant_translation is None
+            ):
                 text = input_transcription.text.strip()
                 if text and input_speaker == "tenant":
                     confirm_live_audio(state)
@@ -442,7 +448,7 @@ async def send_tenant_text(state: ConnectionState, text: str) -> None:
         if not live_translation_received:
             translation = (
                 text
-                if state.tenant_lang == "en"
+                if state.tenant_lang.split("-", 1)[0] == "en"
                 else await gateway.translate_tenant_text(text, state.tenant_lang)
             )
             if translation:

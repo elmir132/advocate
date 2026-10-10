@@ -1,6 +1,6 @@
 # Advocate backend
 
-FastAPI service for the live tenant/landlord interpreter. It uses the official `google-genai` SDK, reads `GEMINI_API_KEY` from the ignored repository-root `.env` or process environment, and never returns or logs the key. Models are selected only after the authenticated SDK `models.list()` response advertises the required action. Calls have a 30-second SDK timeout and no SDK retry loop. If Live setup fails or no audio transcription arrives within 12 seconds, buffered tenant audio is sent to text-mode `generateContent` as WAV for transcription and translation.
+FastAPI service for the live tenant/landlord interpreter. It uses the official `google-genai` SDK, reads `GEMINI_API_KEY` from the ignored repository-root `.env` or process environment, and never returns or logs the key. Models are selected only after the authenticated SDK `models.list()` response advertises the required action. Calls have a 30-second SDK timeout and at most three attempts, with a 0.5-second pause, only for HTTP 503 or explicit overloaded errors. Streaming audio chunks are never retried. If Live setup fails or no audio transcription arrives within 12 seconds, buffered tenant audio is sent to text-mode `generateContent` as WAV for transcription and translation; typed tenant text similarly falls back to text-mode translation.
 
 ## Confirmed model IDs
 
@@ -20,7 +20,7 @@ The current Google model directory and the authenticated list use `gemini-3.5-li
 backend/.venv/bin/python -m backend.list_models
 ```
 
-The 20-line text evaluation completed with the first selected model, `gemini-3.5-flash-lite`: micro precision `0.897`, micro recall `1.000`, promise accuracy `0.950`. A structured generation attempt on `gemini-3.8-flash` returned HTTP 504 (`DEADLINE_EXCEEDED`), so it is kept as a later candidate rather than preferred. TTS returned audio successfully. A Live text prompt also returned text/audio; however, the audio-input probe produced no transcript, so audio-to-audio translation is not claimed as end-to-end verified. The text fallback successfully transcribed and translated the official sample PCM clip.
+The 20-line text evaluation completed with the first selected model, `gemini-3.5-flash-lite`: micro precision `0.897`, micro recall `1.000`, promise accuracy `0.950`. A structured generation attempt on `gemini-3.8-flash` returned HTTP 504 (`DEADLINE_EXCEEDED`), so it is kept as a later candidate rather than preferred. Elmir reports that `gemini-3.8-live` with AUDIO output and `output_audio_transcription` returned a Ukrainian audio translation using `google-genai` 1.75.0, and that `gemini-3.8-flash-tts` returns `audio/wav`. Unary TTS WAV is parsed and converted to headerless 16 kHz PCM before Live input; Live's raw 24 kHz PCM audio is sent to the browser, with a WAV-to-24 kHz PCM normalization path as a safeguard. The text fallback successfully transcribed and translated the official sample PCM clip.
 
 Current SDK documentation: [Live API SDK guide](https://ai.google.dev/gemini-api/docs/live-api/get-started-sdk), [model directory](https://ai.google.dev/gemini-api/docs/models), [structured output guide](https://ai.google.dev/gemini-api/docs/structured-output), and [Google Gen AI Python SDK](https://googleapis.github.io/python-genai/).
 
@@ -58,7 +58,8 @@ backend/.venv/bin/python eval/run_eval.py --dry-run
 ## Endpoints
 
 - `GET /health` returns `{"ok":true,"live":true|false}`.
-- `WS /ws` accepts the JSON message types in `CONTRACT.md`. Audio input is base64 PCM16, 16 kHz, mono. Live audio outputs are forwarded as base64 audio chunks; structured landlord analysis is separately requested in text mode and filtered to the five contract flags.
+- `GET /` and `/web/*` serve the frontend; `/data/landlord_lines.json` serves the simulator lines; `/eval/results.json` serves the evaluation output or returns 404 when it is missing. CORS allows `http://127.0.0.1` and `http://localhost` on any port.
+- `WS /ws` accepts the JSON message types in `CONTRACT.md`. Audio input is base64 PCM16, 16 kHz, mono. `tenant_text` is treated as a tenant transcript, sent through Live text input where available, and otherwise translated to English in text mode. Live audio outputs are sent to the browser as base64 headerless PCM16, 24 kHz, mono; structured landlord analysis is separately requested in text mode and filtered to the five contract flags.
 - `POST /landlord/say` accepts `{"id":"L03","text":"..."}`. With a connected session and confirmed TTS/Live models it synthesizes the landlord line and feeds it into the Live session; otherwise it uses the text-mode translation path. It returns `{"ok":true}` on success.
 
 Conversation content is kept in memory for the current WebSocket session only. The backend does not send or sign anything. A two-language summary is generated only when that session sends `approve_summary`; summaries and notes are instructed not to provide legal advice.
