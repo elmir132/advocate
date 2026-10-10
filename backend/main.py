@@ -9,13 +9,17 @@ import contextlib
 import re
 import time
 from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from google.genai import types
 from pydantic import BaseModel, Field
 
-from backend.ai import GeminiGateway, wav_to_pcm16k
+from backend.ai import GeminiGateway, call_with_service_retries, wav_to_pcm16k, wav_to_pcm24k
 
 
 LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
@@ -24,6 +28,10 @@ MAX_BUFFERED_AUDIO_BYTES = 2_000_000
 MAX_TEXT_CHARS = 8_000
 LIVE_AUDIO_GRACE_SECONDS = 12.0
 FALLBACK_QUIET_SECONDS = 0.8
+REPO_ROOT = Path(__file__).resolve().parents[1]
+WEB_DIR = REPO_ROOT / "web"
+LANDLORD_LINES_PATH = REPO_ROOT / "data" / "landlord_lines.json"
+EVAL_RESULTS_PATH = REPO_ROOT / "eval" / "results.json"
 
 
 class LandlordSayRequest(BaseModel):
@@ -39,7 +47,7 @@ def validate_client_message(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict) or not isinstance(payload.get("type"), str):
         raise ClientMessageError("Expected a JSON object with a message type.")
     kind = payload["type"]
-    if kind not in {"start", "audio", "landlord_text", "approve_summary", "stop"}:
+    if kind not in {"start", "audio", "landlord_text", "tenant_text", "approve_summary", "stop"}:
         raise ClientMessageError("Unsupported message type.")
     if kind == "start":
         language = payload.get("tenant_lang", "uk")
@@ -63,6 +71,10 @@ def validate_client_message(payload: Any) -> dict[str, Any]:
             raise ClientMessageError("Landlord line needs an ID under 80 characters.")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT_CHARS:
             raise ClientMessageError("Landlord line text is empty or too long.")
+    elif kind == "tenant_text":
+        text = payload.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT_CHARS:
+            raise ClientMessageError("Tenant text is empty or too long.")
     return payload
 
 
@@ -83,6 +95,7 @@ class ConnectionState:
         self.tenant_lang = "uk"
         self.live_input_speaker = "tenant"
         self.pending_landlord_translation: asyncio.Future[str] | None = None
+        self.pending_tenant_translation: asyncio.Future[str] | None = None
         self.unconfirmed_live_audio = bytearray()
         self.fallback_audio = bytearray()
         self.last_fallback_audio_at = 0.0
@@ -127,6 +140,37 @@ hub = SessionHub()
 app = FastAPI(title="Advocate API", version="0.1.0")
 app.state.gateway = gateway
 app.state.hub = hub
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^http://(?:127\.0\.0\.1|localhost)(?::\d+)?$",
+    allow_methods=["GET", "HEAD", "OPTIONS", "POST"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/")
+async def serve_frontend() -> FileResponse:
+    index = WEB_DIR / "index.html"
+    if not index.is_file():
+        raise HTTPException(status_code=404, detail="Frontend not found.")
+    return FileResponse(index)
+
+
+@app.get("/data/landlord_lines.json")
+async def serve_landlord_lines() -> FileResponse:
+    if not LANDLORD_LINES_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Landlord lines not found.")
+    return FileResponse(LANDLORD_LINES_PATH, media_type="application/json")
+
+
+@app.get("/eval/results.json")
+async def serve_eval_results() -> FileResponse:
+    if not EVAL_RESULTS_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Evaluation results not found.")
+    return FileResponse(EVAL_RESULTS_PATH, media_type="application/json")
+
+
+app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
 
 
 async def start_live_session(state: ConnectionState) -> None:
@@ -146,9 +190,14 @@ async def start_live_session(state: ConnectionState) -> None:
         ),
     }
     try:
-        connector = gateway.client.aio.live.connect(model=model, config=config)
-        state.live_session = await asyncio.wait_for(
-            state.exit_stack.enter_async_context(connector), timeout=12.0
+        state.live_session = await call_with_service_retries(
+            lambda: asyncio.wait_for(
+                state.exit_stack.enter_async_context(
+                    gateway.client.aio.live.connect(model=model, config=config)
+                ),
+                timeout=12.0,
+            ),
+            threaded=False,
         )
         state.live_reader = asyncio.create_task(read_live_session(state))
     except Exception:
@@ -190,20 +239,30 @@ async def read_live_session(state: ConnectionState) -> None:
                         confirm_live_audio(state)
                     to = "tenant" if input_speaker == "landlord" else "landlord"
                     await state.send({"type": "translation", "to": to, "text": translated})
-                    state.history.append({"speaker": "translation", "lang": state.tenant_lang, "text": translated})
+                    translation_lang = state.tenant_lang if input_speaker == "landlord" else "en"
+                    state.history.append({"speaker": "translation", "lang": translation_lang, "text": translated})
                     pending = state.pending_landlord_translation
                     if input_speaker == "landlord" and pending and not pending.done():
                         pending.set_result(translated)
+                    pending_tenant = state.pending_tenant_translation
+                    if input_speaker == "tenant" and pending_tenant and not pending_tenant.done():
+                        pending_tenant.set_result(translated)
 
             model_turn = getattr(content, "model_turn", None)
             for part in getattr(model_turn, "parts", []) or []:
                 inline_data = getattr(part, "inline_data", None)
                 data = getattr(inline_data, "data", None) if inline_data else None
                 if data:
-                    if isinstance(data, str):
-                        encoded = data
-                    else:
-                        encoded = base64.b64encode(data).decode("ascii")
+                    try:
+                        pcm_data = base64.b64decode(data, validate=True) if isinstance(data, str) else bytes(data)
+                        mime_type = (getattr(inline_data, "mime_type", "") or "").lower()
+                        if "wav" in mime_type or "wave" in mime_type:
+                            pcm_data = wav_to_pcm24k(pcm_data)
+                        if not pcm_data or len(pcm_data) % 2:
+                            continue
+                    except (ValueError, TypeError):
+                        continue
+                    encoded = base64.b64encode(pcm_data).decode("ascii")
                     await state.status("speaking")
                     await state.send({"type": "audio", "data": encoded})
 
@@ -219,6 +278,9 @@ async def read_live_session(state: ConnectionState) -> None:
         pending = state.pending_landlord_translation
         if pending and not pending.done():
             pending.set_exception(RuntimeError("Live translation unavailable"))
+        pending_tenant = state.pending_tenant_translation
+        if pending_tenant and not pending_tenant.done():
+            pending_tenant.set_exception(RuntimeError("Live translation unavailable"))
 
 
 def confirm_live_audio(state: ConnectionState) -> None:
@@ -350,6 +412,47 @@ async def send_landlord_line(
         await state.status("listening")
 
 
+async def send_tenant_text(state: ConnectionState, text: str) -> None:
+    """Treat typed tenant text as the transcript of tenant speech."""
+    async with state.command_lock:
+        state.summary_approved = False
+        state.history.append({"speaker": "tenant", "lang": state.tenant_lang, "text": text})
+        await state.status("thinking")
+        await state.send(
+            {"type": "transcript", "speaker": "tenant", "lang": state.tenant_lang, "text": text}
+        )
+
+        live_translation_received = False
+        if state.live_session is not None and not state.live_failed:
+            future = asyncio.get_running_loop().create_future()
+            state.pending_tenant_translation = future
+            state.live_input_speaker = "tenant"
+            try:
+                async with state.live_send_lock:
+                    await state.live_session.send_realtime_input(text=text)
+                await asyncio.wait_for(asyncio.shield(future), timeout=8.0)
+                live_translation_received = True
+            except Exception:
+                state.live_failed = True
+                state.live_session = None
+            finally:
+                state.pending_tenant_translation = None
+                state.live_input_speaker = "tenant"
+
+        if not live_translation_received:
+            translation = (
+                text
+                if state.tenant_lang == "en"
+                else await gateway.translate_tenant_text(text, state.tenant_lang)
+            )
+            if translation:
+                await state.send({"type": "translation", "to": "landlord", "text": translation})
+                state.history.append({"speaker": "translation", "lang": "en", "text": translation})
+            else:
+                await state.error("Typed tenant text could not be translated right now.")
+        await state.status("listening")
+
+
 @app.get("/health")
 async def health() -> dict[str, bool]:
     return {"ok": True, "live": gateway.key_present}
@@ -422,6 +525,11 @@ async def websocket_session(websocket: WebSocket) -> None:
                     await state.error("Start a session before sending landlord lines.")
                     continue
                 await send_landlord_line(state, payload["id"], payload["text"])
+            elif kind == "tenant_text":
+                if not state.started:
+                    await state.error("Start a session before sending tenant text.")
+                    continue
+                await send_tenant_text(state, payload["text"])
             elif kind == "approve_summary":
                 if not state.started or not state.history:
                     await state.error("There is no conversation to summarize yet.")
