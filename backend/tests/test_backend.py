@@ -94,3 +94,42 @@ def test_live_audio_watchdog_uses_text_fallback_without_network(monkeypatch):
     import asyncio
 
     asyncio.run(run())
+
+
+def test_summary_is_generated_only_after_approval_without_network(monkeypatch):
+    async def fake_start(_state):
+        return None
+
+    async def fake_analysis(line_id, _text, _language):
+        return normalize_analysis(
+            {
+                "translation": "The heater will be fixed.",
+                "flags": ["promise", "not_a_valid_flag"],
+                "promise": True,
+                "note": "This is a candidate promise.",
+            },
+            line_id,
+        )
+
+    async def fake_summary(_history, language):
+        return {"markdown": "### Tenant summary\nRepair promise\n\n### English\nRepair promise", "languages": [language, "en"]}
+
+    monkeypatch.setattr("backend.main.start_live_session", fake_start)
+    monkeypatch.setattr(gateway, "analyze_landlord_line", fake_analysis)
+    monkeypatch.setattr(gateway, "summarize", fake_summary)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            assert websocket.receive_json()["state"] == "idle"
+            websocket.send_json({"type": "start", "tenant_lang": "uk"})
+            assert websocket.receive_json() == {"type": "status", "state": "thinking"}
+            assert websocket.receive_json() == {"type": "status", "state": "listening"}
+            websocket.send_json({"type": "landlord_text", "id": "L04", "text": "I will repair the heater."})
+            preapproval = [websocket.receive_json() for _ in range(5)]
+            assert not any(message["type"] == "summary" for message in preapproval)
+            analysis = next(message for message in preapproval if message["type"] == "analysis")
+            assert analysis["flags"] == ["promise"]
+            websocket.send_json({"type": "approve_summary"})
+            approval_messages = [websocket.receive_json() for _ in range(3)]
+            summary = next(message for message in approval_messages if message["type"] == "summary")
+            assert summary["languages"] == ["uk", "en"]
