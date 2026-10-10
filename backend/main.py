@@ -6,11 +6,13 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
+import json
 import re
 import time
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +21,13 @@ from fastapi.staticfiles import StaticFiles
 from google.genai import types
 from pydantic import BaseModel, Field
 
-from backend.ai import GeminiGateway, call_with_service_retries, wav_to_pcm16k, wav_to_pcm24k
+from backend.ai import (
+    TTS_CANDIDATES,
+    GeminiGateway,
+    call_with_service_retries,
+    wav_to_pcm16k,
+    wav_to_pcm24k,
+)
 
 
 LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
@@ -32,11 +40,65 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WEB_DIR = REPO_ROOT / "web"
 LANDLORD_LINES_PATH = REPO_ROOT / "data" / "landlord_lines.json"
 EVAL_RESULTS_PATH = REPO_ROOT / "eval" / "results.json"
+TTS_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "landlord-audio"
 
 
 class LandlordSayRequest(BaseModel):
     id: str = Field(min_length=1, max_length=80)
     text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
+
+
+class LandlordAudioCache:
+    """Persistent, single-attempt-per-line cache for generated landlord WAVs."""
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    @staticmethod
+    def _key(line_id: str, text: str) -> str:
+        identity = f"{line_id}\0{text}".encode("utf-8")
+        return hashlib.sha256(identity).hexdigest()
+
+    async def get_or_create(
+        self, line_id: str, text: str, synthesize: Callable[[str], Awaitable[bytes | None]]
+    ) -> tuple[bytes | None, str]:
+        key = self._key(line_id, text)
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            audio_path = self.directory / f"{key}.wav"
+            attempted_path = self.directory / f"{key}.attempted"
+            if audio_path.is_file():
+                audio = await asyncio.to_thread(audio_path.read_bytes)
+                try:
+                    wav_to_pcm16k(audio)
+                except Exception:
+                    return None, "attempted"
+                return audio, "cached"
+            if attempted_path.exists():
+                return None, "attempted"
+
+            await asyncio.to_thread(self.directory.mkdir, parents=True, exist_ok=True)
+            try:
+                await asyncio.to_thread(attempted_path.touch, exist_ok=False)
+            except FileExistsError:
+                return None, "attempted"
+
+            try:
+                audio = await synthesize(text)
+            except Exception:
+                return None, "attempted"
+            if not audio:
+                return None, "attempted"
+            try:
+                wav_to_pcm16k(audio)
+            except Exception:
+                return None, "attempted"
+
+            temporary_path = self.directory / f"{key}.tmp"
+            await asyncio.to_thread(temporary_path.write_bytes, audio)
+            await asyncio.to_thread(temporary_path.replace, audio_path)
+            return audio, "generated"
 
 
 class ClientMessageError(ValueError):
@@ -89,13 +151,17 @@ class ConnectionState:
         self.live_reader: asyncio.Task[None] | None = None
         self.live_audio_watchdog: asyncio.Task[None] | None = None
         self.fallback_worker: asyncio.Task[None] | None = None
+        self.background_audio_tasks: set[asyncio.Task[None]] = set()
+        self.landlord_audio_lock = asyncio.Lock()
         self.live_failed = False
         self.live_audio_confirmed = False
         self.started = False
         self.tenant_lang = "uk"
         self.live_input_speaker = "tenant"
-        self.pending_landlord_translation: asyncio.Future[str] | None = None
         self.pending_tenant_translation: asyncio.Future[str] | None = None
+        self.live_translation_parts: list[str] = []
+        self.live_translation_speaker: str | None = None
+        self.suppress_live_translation = False
         self.unconfirmed_live_audio = bytearray()
         self.fallback_audio = bytearray()
         self.last_fallback_audio_at = 0.0
@@ -137,6 +203,7 @@ class SessionHub:
 
 gateway = GeminiGateway()
 hub = SessionHub()
+landlord_audio_cache = LandlordAudioCache(TTS_CACHE_DIR)
 app = FastAPI(title="Advocate API", version="0.1.0")
 app.state.gateway = gateway
 app.state.hub = hub
@@ -239,20 +306,12 @@ async def read_live_session(state: ConnectionState) -> None:
             output_transcription = getattr(content, "output_transcription", None)
             translated = getattr(output_transcription, "text", None) if output_transcription else None
             if translated:
-                translated = translated.strip()
-                if translated:
-                    if input_speaker == "tenant":
-                        confirm_live_audio(state)
-                    to = "tenant" if input_speaker == "landlord" else "landlord"
-                    await state.send({"type": "translation", "to": to, "text": translated})
-                    translation_lang = state.tenant_lang if input_speaker == "landlord" else "en"
-                    state.history.append({"speaker": "translation", "lang": translation_lang, "text": translated})
-                    pending = state.pending_landlord_translation
-                    if input_speaker == "landlord" and pending and not pending.done():
-                        pending.set_result(translated)
-                    pending_tenant = state.pending_tenant_translation
-                    if input_speaker == "tenant" and pending_tenant and not pending_tenant.done():
-                        pending_tenant.set_result(translated)
+                if input_speaker == "tenant":
+                    confirm_live_audio(state)
+                if state.live_translation_speaker is None:
+                    state.live_translation_speaker = input_speaker
+                if state.live_translation_speaker == input_speaker:
+                    state.live_translation_parts.append(translated)
 
             model_turn = getattr(content, "model_turn", None)
             for part in getattr(model_turn, "parts", []) or []:
@@ -273,20 +332,59 @@ async def read_live_session(state: ConnectionState) -> None:
                     await state.send({"type": "audio", "data": encoded})
 
             if getattr(content, "turn_complete", False):
-                state.live_input_speaker = "tenant"
-                await state.status("listening")
+                await finish_live_turn(state, input_speaker)
     except asyncio.CancelledError:
         raise
     except Exception:
         state.live_failed = True
         state.live_session = None
         await move_unconfirmed_audio_to_fallback(state)
-        pending = state.pending_landlord_translation
-        if pending and not pending.done():
-            pending.set_exception(RuntimeError("Live translation unavailable"))
+        state.live_translation_parts.clear()
+        state.live_translation_speaker = None
+        state.suppress_live_translation = False
         pending_tenant = state.pending_tenant_translation
         if pending_tenant and not pending_tenant.done():
             pending_tenant.set_exception(RuntimeError("Live translation unavailable"))
+
+
+async def finish_live_turn(state: ConnectionState, input_speaker: str) -> None:
+    speaker = state.live_translation_speaker or input_speaker
+    translation = join_translation_chunks(state.live_translation_parts)
+    should_send_translation = bool(translation) and not state.suppress_live_translation
+    state.live_translation_parts.clear()
+    state.live_translation_speaker = None
+
+    if should_send_translation:
+        to = "tenant" if speaker == "landlord" else "landlord"
+        translation_lang = state.tenant_lang if speaker == "landlord" else "en"
+        await state.send({"type": "translation", "to": to, "text": translation})
+        state.history.append(
+            {"speaker": "translation", "lang": translation_lang, "text": translation}
+        )
+
+    pending_tenant = state.pending_tenant_translation
+    if speaker == "tenant" and pending_tenant and not pending_tenant.done():
+        if translation:
+            pending_tenant.set_result(translation)
+        else:
+            pending_tenant.set_exception(RuntimeError("Live translation was empty"))
+
+    state.suppress_live_translation = False
+    state.live_input_speaker = "tenant"
+    await state.status("listening")
+
+
+def join_translation_chunks(parts: list[str]) -> str:
+    text = ""
+    no_space_before = ",.;:!?%)]}»’'\""
+    for part in parts:
+        chunk = part.strip()
+        if not chunk:
+            continue
+        if text and not text[-1].isspace() and chunk[0] not in no_space_before:
+            text += " "
+        text += chunk
+    return text
 
 
 def confirm_live_audio(state: ConnectionState) -> None:
@@ -359,9 +457,7 @@ async def _watch_live_audio(state: ConnectionState) -> None:
         raise
 
 
-async def send_landlord_line(
-    state: ConnectionState, line_id: str, text: str, *, synthesize: bool = False
-) -> None:
+async def send_landlord_line(state: ConnectionState, line_id: str, text: str) -> dict[str, Any]:
     async with state.command_lock:
         state.summary_approved = False
         await state.status("thinking")
@@ -377,45 +473,44 @@ async def send_landlord_line(
                 "note": result["note"],
             }
         )
-
-        live_translation_started = False
-        live_translation_received = False
-        if synthesize and state.live_session is not None and not state.live_failed:
-            wav_data = await gateway.synthesize_landlord_wav(text)
-            if wav_data:
-                try:
-                    pcm_data = wav_to_pcm16k(wav_data)
-                    future = asyncio.get_running_loop().create_future()
-                    state.pending_landlord_translation = future
-                    state.live_input_speaker = "landlord"
-                    async with state.live_send_lock:
-                        await state.live_session.send_realtime_input(
-                            text=(
-                                f"The next audio is a landlord speaking in English. Translate it faithfully "
-                                f"into {state.tenant_lang}; speak only the translation."
-                            )
-                        )
-                        await state.live_session.send_realtime_input(
-                            audio=types.Blob(data=pcm_data, mime_type="audio/pcm;rate=16000")
-                        )
-                    live_translation_started = True
-                    try:
-                        await asyncio.wait_for(asyncio.shield(future), timeout=8.0)
-                        live_translation_received = True
-                    except (asyncio.TimeoutError, RuntimeError):
-                        state.live_failed = True
-                        state.live_session = None
-                    finally:
-                        state.pending_landlord_translation = None
-                        state.live_input_speaker = "tenant"
-                except Exception:
-                    state.live_failed = True
-                    state.live_session = None
-
-        if not live_translation_started or not live_translation_received:
-            translation = result["translation"] or text
-            await state.send({"type": "translation", "to": "tenant", "text": translation})
+        translation = result["translation"] or text
+        await state.send({"type": "translation", "to": "tenant", "text": translation})
+        state.history.append({"speaker": "translation", "lang": state.tenant_lang, "text": translation})
         await state.status("listening")
+        return result
+
+
+async def generate_and_stream_landlord_audio(
+    state: ConnectionState, line_id: str, text: str
+) -> None:
+    """Generate cached landlord speech off-request and feed it to Live for translated audio."""
+    try:
+        async with state.landlord_audio_lock:
+            wav_data, _cache_state = await landlord_audio_cache.get_or_create(
+                line_id, text, gateway.synthesize_landlord_wav
+            )
+            if not wav_data or state.live_session is None or state.live_failed:
+                return
+
+            pcm_data = wav_to_pcm16k(wav_data)
+            session = state.live_session
+            state.live_input_speaker = "landlord"
+            state.suppress_live_translation = True
+            async with state.live_send_lock:
+                await session.send_realtime_input(
+                    text=(
+                        f"The next audio is a landlord speaking in English. Translate it faithfully "
+                        f"into {state.tenant_lang}; speak only the translation."
+                    )
+                )
+                await session.send_realtime_input(
+                    audio=types.Blob(data=pcm_data, mime_type="audio/pcm;rate=16000")
+                )
+    except Exception:
+        state.suppress_live_translation = False
+        state.live_input_speaker = "tenant"
+        state.live_failed = True
+        state.live_session = None
 
 
 async def send_tenant_text(state: ConnectionState, text: str) -> None:
@@ -573,5 +668,39 @@ async def landlord_say(request: LandlordSayRequest) -> dict[str, bool]:
     state = await hub.latest_active()
     if state is None:
         raise HTTPException(status_code=409, detail="No active interpreter session.")
-    await send_landlord_line(state, request.id, request.text, synthesize=True)
+    await send_landlord_line(state, request.id, request.text)
+    task = asyncio.create_task(generate_and_stream_landlord_audio(state, request.id, request.text))
+    state.background_audio_tasks.add(task)
+    task.add_done_callback(state.background_audio_tasks.discard)
     return {"ok": True}
+
+
+@app.post("/landlord/warmup")
+async def landlord_audio_warmup() -> dict[str, int | bool]:
+    await gateway.initialize()
+    if gateway.select_model("generateContent", TTS_CANDIDATES) is None:
+        raise HTTPException(status_code=503, detail="No text-to-speech model is available.")
+    try:
+        lines = json.loads(LANDLORD_LINES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise HTTPException(status_code=500, detail="Warm-up lines are unavailable.") from None
+    if not isinstance(lines, list) or len(lines) != 20:
+        raise HTTPException(status_code=500, detail="Warm-up expects the 20 landlord demo lines.")
+
+    generated = 0
+    cached = 0
+    unavailable = 0
+    for line in lines:
+        if not isinstance(line, dict) or not isinstance(line.get("id"), str) or not isinstance(line.get("text"), str):
+            unavailable += 1
+            continue
+        audio, cache_state = await landlord_audio_cache.get_or_create(
+            line["id"], line["text"], gateway.synthesize_landlord_wav
+        )
+        if cache_state == "generated" and audio:
+            generated += 1
+        elif cache_state == "cached" and audio:
+            cached += 1
+        else:
+            unavailable += 1
+    return {"ok": True, "total": len(lines), "generated": generated, "cached": cached, "unavailable": unavailable}

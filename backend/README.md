@@ -60,6 +60,14 @@ backend/.venv/bin/python eval/run_eval.py --dry-run
 - `GET /health` returns `{"ok":true,"live":true|false}`.
 - `GET /` and `/web/*` serve the frontend; `/data/landlord_lines.json` serves the simulator lines; `/eval/results.json` serves the evaluation output or returns 404 when it is missing. CORS allows `http://127.0.0.1` and `http://localhost` on any port.
 - `WS /ws` accepts the JSON message types in `CONTRACT.md`. Audio input is base64 PCM16, 16 kHz, mono. `tenant_text` is treated as a tenant transcript, sent through Live text input where available, and otherwise translated to English in text mode. Live audio outputs are sent to the browser as base64 headerless PCM16, 24 kHz, mono; structured landlord analysis is separately requested in text mode and filtered to the five contract flags.
-- `POST /landlord/say` accepts `{"id":"L03","text":"..."}`. With a connected session and confirmed TTS/Live models it synthesizes the landlord line and feeds it into the Live session; otherwise it uses the text-mode translation path. It returns `{"ok":true}` on success.
+- `POST /landlord/say` sends the transcript, analysis, and complete text translation before returning `{"ok":true}`. It then generates landlord speech in a background task and feeds the cached WAV to Live, whose translated audio continues streaming to the browser. WAV files and one-attempt markers are stored under the ignored `backend/.cache/landlord-audio/` folder; each distinct ID/text pair is synthesized at most once.
+- `POST /landlord/warmup` explicitly processes the 20 demo lines sequentially and returns generated/cached/unavailable counts. It is never started automatically; repeated calls reuse cached audio, and a failed attempted line is not regenerated unless its cache entry is removed.
+- Live output transcription fragments are accumulated and sent as one complete `translation` message at `turn_complete`; audio chunks remain streamed as they arrive.
+
+To warm the TTS cache on demand, start the server and run:
+
+```bash
+curl -X POST http://127.0.0.1:8000/landlord/warmup
+```
 
 Conversation content is kept in memory for the current WebSocket session only. The backend does not send or sign anything. A two-language summary is generated only when that session sends `approve_summary`; summaries and notes are instructed not to provide legal advice.
