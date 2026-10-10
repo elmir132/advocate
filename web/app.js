@@ -575,9 +575,23 @@ document.addEventListener("DOMContentLoaded", () => {
   // Who is speaking: "auto" goes by language (English = landlord, your language = you).
   let speakerChoice = "auto";
   const speakerButtons = [...document.querySelectorAll("#speaker-choice [data-speaker]")];
+  function updateTextComposer(value) {
+    const input = document.getElementById("tenant-text-input");
+    if (!input) return;
+    const copy = value === "landlord"
+      ? ["Type the landlord’s message", "Type the landlord’s message"]
+      : value === "tenant"
+        ? ["Type your message", "Type the renter’s message"]
+        : ["Type your message — Auto sends typed text as Me", "Type a message; in Auto, typed text is sent as the renter"];
+    input.placeholder = copy[0];
+    input.setAttribute("aria-label", copy[1]);
+    input.dataset.speaker = value;
+  }
+
   function setSpeaker(value) {
     speakerChoice = value;
     speakerButtons.forEach((b) => b.setAttribute("aria-checked", String(b.dataset.speaker === value)));
+    updateTextComposer(value);
   }
   speakerButtons.forEach((b, i) => {
     b.addEventListener("click", () => setSpeaker(b.dataset.speaker));
@@ -588,6 +602,7 @@ document.addEventListener("DOMContentLoaded", () => {
       next.focus(); setSpeaker(next.dataset.speaker);
     });
   });
+  updateTextComposer(speakerChoice);
 
   // Pointer events support both familiar patterns on one control:
   // hold and release for push-to-talk, or tap once to latch and tap again to stop.
@@ -647,11 +662,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const tenantTextInput = document.getElementById("tenant-text-input");
   tenantTextInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && tenantTextInput.value.trim() !== "") {
+    const text = tenantTextInput.value.trim();
+    if (e.key === "Enter" && text !== "") {
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "tenant_text", text: tenantTextInput.value.trim() }));
+        if (speakerChoice === "landlord") {
+          ws.send(JSON.stringify({ type: "landlord_text", id: `typed-${Date.now()}`, text }));
+          showHint("Landlord message sent. Translating and checking details…", "live");
+        } else {
+          ws.send(JSON.stringify({ type: "tenant_text", text }));
+          showHint(speakerChoice === "auto" ? "Sent as Me. Translating…" : "Your message was sent. Translating…", "live");
+        }
         tenantTextInput.value = "";
-        showHint("Sent. Translating…", "live");
       } else {
         showHint("Not connected yet. Wait a moment and try again.", "error");
       }
