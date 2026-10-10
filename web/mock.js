@@ -67,7 +67,17 @@
           setTimeout(() => {
             const line = landlordLines.find(l => l.id === msg.id) || { text: msg.text, expected_flags: [], promise: false };
             this._sendToClient({ type: "transcript", speaker: "landlord", lang: "en", text: line.text });
-            this._sendToClient({ type: "translation", to: "tenant", text: "Можливо, ми зможемо домовитись або знайти якесь рішення." });
+            const mockTranslations = {
+              L01: "Застава становить орендну плату за два місяці й не повертається, якщо ви виїдете до закінчення терміну оренди.",
+              L03: "Ми, ймовірно, зможемо полагодити обігрівач десь наступного тижня. Я подивлюся, що можна зробити.",
+              L04: "Я обіцяю перефарбувати всю квартиру до того, як ви в’їдете першого числа.",
+              L07: "Суборенда повністю заборонена, а порушення цього правила означає втрату застави."
+            };
+            this._sendToClient({
+              type: "translation",
+              to: "tenant",
+              text: mockTranslations[line.id] || "[Mock mode: translation is not available for this sample.]"
+            });
             
             const noteMap = {
               "vague_commitment": "ask for it in writing",
@@ -112,6 +122,11 @@
       }
     }
   }
+
+  MockWebSocket.CONNECTING = 0;
+  MockWebSocket.OPEN = 1;
+  MockWebSocket.CLOSING = 2;
+  MockWebSocket.CLOSED = 3;
 
   window.OriginalWebSocket = window.WebSocket;
   window.WebSocket = MockWebSocket;

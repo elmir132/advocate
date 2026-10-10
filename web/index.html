@@ -89,6 +89,11 @@
       <div class="controls-left-top">
         <label class="select-wrap"><span class="sr-only">Tenant language</span><select id="tenant-lang" aria-label="Tenant language"><option value="uk" selected>Ukrainian</option><option value="ru">Russian</option><option value="es">Spanish</option><option value="zh">Chinese</option><option value="en">English</option></select></label>
         <button id="mic-btn" class="mic-btn" aria-label="Hold to speak" title="Hold Space to speak"><span class="mic-icon" aria-hidden="true"></span><span>Hold to speak</span><kbd>Space</kbd></button>
+        <div id="speaker-choice" class="speaker-choice" role="radiogroup" aria-label="Who is speaking">
+          <button type="button" role="radio" aria-checked="true" data-speaker="auto" title="English is treated as the landlord, your language as you">Auto</button>
+          <button type="button" role="radio" aria-checked="false" data-speaker="tenant">Me</button>
+          <button type="button" role="radio" aria-checked="false" data-speaker="landlord">Landlord</button>
+        </div>
         <label id="mute-toggle-label" class="mute-label"><input type="checkbox" id="mute-toggle"><span>Mute voice</span></label>
       </div>
       <div class="text-input-wrap"><input type="text" id="tenant-text-input" placeholder="Type the tenant’s message" aria-label="Tenant typed fallback"><kbd>Enter</kbd></div>
@@ -99,7 +104,7 @@
     </div>
   </section>
 
-  <footer><p>Speech and text are processed by Gemini <span>•</span> Flags are candidates <span>•</span> Nothing is sent to anyone</p></footer>
+  <footer><p>Speech and text are processed by Gemini <span>•</span> Flags are candidates <span>•</span> No message or summary is sent automatically</p></footer>
 
   <dialog id="summary-dialog">
     <div class="dialog-content">

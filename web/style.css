@@ -327,3 +327,10 @@ dialog::backdrop { background: rgba(8, 47, 42, .52); backdrop-filter: blur(6px);
 /* While recording, the bars follow the real input level instead of a canned animation. */
 body[data-state="recording"] .waveform i { animation: none; opacity: .95; height: 16px; transform-origin: center; transition: transform .08s linear; background: #d68414; }
 @media (prefers-reduced-motion: reduce) { body[data-state="recording"] .waveform i { transition: none; } }
+
+/* Who is speaking */
+.speaker-choice { display: inline-flex; border: 1px solid #cfe0db; border-radius: 10px; overflow: hidden; background: #fff; height: 42px; }
+.speaker-choice button { border: 0; background: none; padding: 0 11px; font: inherit; font-size: .8rem; font-weight: 650; color: #5e7a74; cursor: pointer; }
+.speaker-choice button + button { border-left: 1px solid #e3ece9; }
+.speaker-choice button[aria-checked="true"] { background: #e6f2ef; color: #0b5147; }
+.speaker-choice button:focus-visible { outline: 2px solid #d68414; outline-offset: -2px; }

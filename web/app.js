@@ -77,7 +77,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       case "transcript":
         appendTranscript(msg.speaker, msg.text, msg.lang);
-        if (msg.speaker === "tenant" && window.advocateShowHint) window.advocateShowHint("", "");
+        if (window.advocateShowHint) window.advocateShowHint("", "");
         break;
 
       case "translation":
@@ -96,6 +96,13 @@ document.addEventListener("DOMContentLoaded", () => {
         showSummary(msg.markdown);
         break;
         
+      case "speaker":
+        if (window.advocateShowHint) {
+          if (msg.note) window.advocateShowHint(msg.note, "error");
+          else window.advocateShowHint(msg.speaker === "landlord" ? "Heard the landlord. Checking what was said…" : "Heard you. Translating…", "live");
+        }
+        break;
+
       case "error":
         console.error("Server Error:", msg.message);
         if (window.advocateShowHint) window.advocateShowHint(msg.message, "error");
@@ -275,9 +282,16 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    })[char]);
+  }
+
   function renderMarkdown(md) {
-    if (md.includes("|")) {
-      const rows = md.trim().split('\n').filter(r => r.includes('|'));
+    const safe = escapeHtml(md);
+    if (safe.includes("|")) {
+      const rows = safe.trim().split('\n').filter(r => r.includes('|'));
       if (rows.length > 2) {
         let html = '<table style="width:100%; border-collapse: collapse; text-align: left;">';
         rows.forEach((row, i) => {
@@ -291,16 +305,12 @@ document.addEventListener("DOMContentLoaded", () => {
           html += '</tr>';
         });
         html += '</table>';
-        // if the entire thing was a table, return. Otherwise, we might have mixed content. 
-        // For simplicity, just return table if it looks like one.
-        if (rows.length === md.trim().split('\n').filter(r=>r.trim()).length) return html;
+        if (rows.length === safe.trim().split('\n').filter(r => r.trim()).length) return html;
       }
     }
-    
-    // Split by languages if they use ## headings
-    const parts = md.split(/(?=## )/);
+
+    const parts = safe.split(/(?=## )/);
     if (parts.length === 3) {
-      // Possibly a header and two language sections. Put them in two columns.
       let html = '<div style="display: flex; gap: 2rem;">';
       parts.forEach(p => {
         if (!p.trim()) return;
@@ -310,7 +320,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return html;
     }
 
-    return md.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    return safe.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   }
 
   function showSummary(markdown) {
@@ -539,11 +549,28 @@ document.addEventListener("DOMContentLoaded", () => {
       showHint("Hold the button a little longer: the microphone was still starting.", "error");
       return;
     }
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "audio_end" }));
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "audio_end", speaker: speakerChoice }));
     if (held < MIN_HOLD_MS) showHint("That was very short. Hold the button while you speak, then let go.", "error");
     else if (peakLevel < 0.004) showHint("No sound reached the microphone. Check the input device in your system settings.", "error");
     else showHint("Got it. Transcribing…", "live");
   }
+
+  // Who is speaking: "auto" goes by language (English = landlord, your language = you).
+  let speakerChoice = "auto";
+  const speakerButtons = [...document.querySelectorAll("#speaker-choice [data-speaker]")];
+  function setSpeaker(value) {
+    speakerChoice = value;
+    speakerButtons.forEach((b) => b.setAttribute("aria-checked", String(b.dataset.speaker === value)));
+  }
+  speakerButtons.forEach((b, i) => {
+    b.addEventListener("click", () => setSpeaker(b.dataset.speaker));
+    b.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      e.preventDefault();
+      const next = speakerButtons[(i + (e.key === "ArrowRight" ? 1 : speakerButtons.length - 1)) % speakerButtons.length];
+      next.focus(); setSpeaker(next.dataset.speaker);
+    });
+  });
 
   // Pointer events cover mouse, touch and pen. Capturing the pointer means sliding
   // off the button no longer cuts the recording short.

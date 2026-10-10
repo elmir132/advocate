@@ -191,6 +191,40 @@ def wav_to_pcm24k(wav_data: bytes) -> bytes:
     return _wav_to_pcm16(wav_data, 24000)
 
 
+
+_LATIN = re.compile(r"[A-Za-z]")
+_CYRILLIC = re.compile(r"[\u0400-\u04FF]")
+_CJK = re.compile(r"[\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]")
+_ARABIC = re.compile(r"[\u0600-\u06FF]")
+_SCRIPT_BY_LANG = {"uk": _CYRILLIC, "ru": _CYRILLIC, "bg": _CYRILLIC, "sr": _CYRILLIC, "zh": _CJK, "ja": _CJK, "ko": _CJK, "ar": _ARABIC, "fa": _ARABIC, "ur": _ARABIC}
+
+
+def parse_transcription(raw: str, tenant_lang: str) -> dict[str, str] | None:
+    """Turn the model's two-line reply into {"text", "lang"}; lang is "en" or the tenant's code.
+
+    When the tenant's language has its own script, the script of the transcript decides the
+    language, because that is more dependable than the model's label.
+    """
+    text = raw.strip()
+    if not text or "NOSPEECH" in text.upper():
+        return None
+    tenant = tenant_lang.lower().split("-")[0]
+    label = ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) >= 2 and re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z]{2,4})?[:.]?", lines[0]):
+        label = lines[0].rstrip(":.").lower().split("-")[0]
+        text = " ".join(lines[1:]).strip()
+    if not text:
+        return None
+    lang = label if label in {"en", tenant} else ""
+    script = _SCRIPT_BY_LANG.get(tenant)
+    if script is not None and tenant != "en":
+        own, latin = len(script.findall(text)), len(_LATIN.findall(text))
+        if own or latin:
+            lang = tenant if own >= latin else "en"
+    return {"text": text, "lang": lang or tenant}
+
+
 class GeminiGateway:
     """Lazily discovers key-accessible model IDs and calls the official SDK."""
 
@@ -330,10 +364,12 @@ class GeminiGateway:
             payload = {**payload, "translation": plain}
         return normalize_analysis(payload, line_id)
 
-    async def transcribe_tenant_audio(self, pcm16: bytes, tenant_lang: str) -> str | None:
-        """Plain-text transcription of one held-to-talk utterance (16 kHz mono PCM16).
+    async def transcribe_speech(self, pcm16: bytes, tenant_lang: str) -> dict[str, str] | None:
+        """Transcribe one held-to-talk clip (16 kHz mono PCM16) and say which language it was.
 
-        Returns None when the model is unavailable or says there was no speech.
+        Returns {"text", "lang"} where lang is "en" or the tenant's language code, or None when
+        the model is unavailable or heard no speech. Plain text output: structured JSON output
+        sometimes garbled Ukrainian words.
         """
         await self.discover_models()
         model = self.select_model("generateContent", TEXT_CANDIDATES)
@@ -347,8 +383,10 @@ class GeminiGateway:
             wav_file.writeframes(pcm16)
         audio_part = types.Part.from_bytes(data=wav_buffer.getvalue(), mime_type="audio/wav")
         prompt = (
-            f"Transcribe this speech verbatim in its original language (expected language code: {tenant_lang}). "
-            "Reply with the transcript only. If there is no intelligible speech, reply with the single word NOSPEECH."
+            f"The speaker is talking in either English (code en) or the language with code {tenant_lang}. "
+            "Transcribe the speech verbatim in the language it was spoken in. Do not translate. "
+            f"Reply with exactly two lines: line 1 is the language code (en or {tenant_lang}), "
+            "line 2 is the transcript. If there is no intelligible speech, reply with the single word NOSPEECH."
         )
 
         def request() -> str | None:
@@ -363,10 +401,12 @@ class GeminiGateway:
             out = await call_with_service_retries(request)
         except Exception:
             return None
-        out = (out or "").strip()
-        if not out or "NOSPEECH" in out.upper():
-            return None
-        return out
+        return parse_transcription(out or "", tenant_lang)
+
+    async def transcribe_tenant_audio(self, pcm16: bytes, tenant_lang: str) -> str | None:
+        """Kept for callers that only need the words."""
+        result = await self.transcribe_speech(pcm16, tenant_lang)
+        return result["text"] if result else None
 
     async def translate_tenant_audio(self, pcm16: bytes, tenant_lang: str) -> dict[str, str] | None:
         """Generate-content fallback for a failed/unavailable Live API call."""

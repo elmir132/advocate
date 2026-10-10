@@ -123,6 +123,11 @@ def validate_client_message(payload: Any) -> dict[str, Any]:
         if not isinstance(language, str) or not LANGUAGE_RE.fullmatch(language):
             raise ClientMessageError("Use a valid tenant language code.")
         payload["tenant_lang"] = language.lower()
+    elif kind == "audio_end":
+        speaker = payload.get("speaker", "auto")
+        if speaker not in {"auto", "tenant", "landlord"}:
+            raise ClientMessageError("Speaker must be auto, tenant or landlord.")
+        payload["speaker"] = speaker
     elif kind == "audio":
         encoded = payload.get("data")
         if not isinstance(encoded, str):
@@ -171,6 +176,8 @@ class ConnectionState:
         self.suppress_live_translation = False
         self.unconfirmed_live_audio = bytearray()
         self.fallback_audio = bytearray()
+        self.speaker_hint = "auto"   # auto | tenant | landlord, set by the last audio_end
+        self.spoken_lines = 0          # counter for landlord lines heard by microphone
         self.last_fallback_audio_at = 0.0
         self.history: list[dict[str, Any]] = []
         self.summary_approved = False
@@ -433,11 +440,27 @@ async def _fallback_worker(state: ConnectionState) -> None:
             await state.status("listening")
             continue
         await state.status("thinking")
-        transcript = await gateway.transcribe_tenant_audio(audio, state.tenant_lang)
-        if transcript:
-            await send_tenant_text(state, transcript)
-        else:
+        heard = await gateway.transcribe_speech(audio, state.tenant_lang)
+        if not heard:
             await state.error("I could not make out any words. Please try again, or type the line.")
+            await state.status("listening")
+            continue
+        # Who spoke? The tenant chose, or we go by language: English is the landlord.
+        speaker = state.speaker_hint
+        if speaker == "auto":
+            if state.tenant_lang == "en":
+                speaker = "tenant"
+                await state.send({"type": "speaker", "speaker": "tenant", "detected": False,
+                                  "note": "Both sides speak English, so pick who is speaking."})
+            else:
+                speaker = "landlord" if heard["lang"] == "en" else "tenant"
+        await state.send({"type": "speaker", "speaker": speaker, "detected": state.speaker_hint == "auto",
+                          "lang": heard["lang"]})
+        if speaker == "landlord":
+            state.spoken_lines += 1
+            await send_landlord_line(state, f"V{state.spoken_lines:02d}", heard["text"])
+        else:
+            await send_tenant_text(state, heard["text"])
         await state.status("listening")
 
 
@@ -645,6 +668,7 @@ async def websocket_session(websocket: WebSocket) -> None:
                 await state.status("listening")
             elif kind == "audio_end":
                 # The tenant let go of the button: transcribe now instead of waiting for a pause.
+                state.speaker_hint = payload.get("speaker", "auto")
                 if state.fallback_audio:
                     state.last_fallback_audio_at = 0.0
                     if state.fallback_worker is None or state.fallback_worker.done():

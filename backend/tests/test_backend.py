@@ -103,15 +103,15 @@ def test_live_audio_watchdog_uses_text_fallback_without_network(monkeypatch):
         async def send_json(self, message):
             self.messages.append(message)
 
-    async def fake_transcribe(_audio, _language):
-        return "A spoken request."
+    async def fake_transcribe(_audio, language):
+        return {"text": "A spoken request.", "lang": language}
 
     async def fake_translate_text(_text, _language):
         return "A request."
 
     monkeypatch.setattr("backend.main.LIVE_AUDIO_GRACE_SECONDS", 0)
     monkeypatch.setattr("backend.main.FALLBACK_QUIET_SECONDS", 0)
-    monkeypatch.setattr(gateway, "transcribe_tenant_audio", fake_transcribe)
+    monkeypatch.setattr(gateway, "transcribe_speech", fake_transcribe)
     monkeypatch.setattr(gateway, "translate_tenant_text", fake_translate_text)
 
     async def run():
@@ -247,10 +247,10 @@ def test_silent_and_too_short_clips_are_reported_not_transcribed(monkeypatch):
 
     async def fake_transcribe(_audio, _language):
         called.append(1)
-        return "should not happen"
+        return {"text": "should not happen", "lang": "uk"}
 
     monkeypatch.setattr("backend.main.FALLBACK_QUIET_SECONDS", 0)
-    monkeypatch.setattr(gateway, "transcribe_tenant_audio", fake_transcribe)
+    monkeypatch.setattr(gateway, "transcribe_speech", fake_transcribe)
 
     async def run():
         import asyncio
@@ -274,3 +274,74 @@ def test_audio_end_is_an_accepted_message():
     from backend.main import validate_client_message
 
     assert validate_client_message({"type": "audio_end"})["type"] == "audio_end"
+
+
+LOUD_SECOND = (b"\x00\x20" * 80 + b"\x00\xe0" * 80) * 100
+
+
+def _run_spoken_clip(monkeypatch, heard, tenant_lang="uk", hint="auto"):
+    """Feed one loud clip through the worker with faked models; return the messages sent."""
+    from backend.main import schedule_text_fallback
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.messages = []
+
+        async def send_json(self, message):
+            self.messages.append(message)
+
+    async def fake_transcribe(_audio, _language):
+        return heard
+
+    async def fake_translate_text(_text, _language):
+        return "translated"
+
+    async def fake_analysis(line_id, text, _language):
+        return normalize_analysis({"translation": "переклад", "flags": ["vague_commitment"], "promise": False, "note": "n"}, line_id)
+
+    monkeypatch.setattr("backend.main.FALLBACK_QUIET_SECONDS", 0)
+    monkeypatch.setattr(gateway, "transcribe_speech", fake_transcribe)
+    monkeypatch.setattr(gateway, "translate_tenant_text", fake_translate_text)
+    monkeypatch.setattr(gateway, "analyze_landlord_line", fake_analysis)
+
+    async def run():
+        state = ConnectionState(FakeWebSocket())
+        state.started = True
+        state.tenant_lang = tenant_lang
+        state.speaker_hint = hint
+        schedule_text_fallback(state, LOUD_SECOND)
+        await state.fallback_worker
+        return state.websocket.messages
+
+    import asyncio
+
+    return asyncio.run(run())
+
+
+def test_english_speech_is_treated_as_the_landlord_and_analysed(monkeypatch):
+    messages = _run_spoken_clip(monkeypatch, {"text": "Maybe next week.", "lang": "en"})
+    assert {"type": "speaker", "speaker": "landlord", "detected": True, "lang": "en"} in messages
+    assert any(m.get("type") == "analysis" and m["flags"] == ["vague_commitment"] for m in messages)
+    assert any(m.get("type") == "transcript" and m["speaker"] == "landlord" for m in messages)
+
+
+def test_tenant_language_speech_is_treated_as_the_tenant(monkeypatch):
+    messages = _run_spoken_clip(monkeypatch, {"text": "Коли ремонт?", "lang": "uk"})
+    assert any(m.get("type") == "speaker" and m["speaker"] == "tenant" for m in messages)
+    assert not any(m.get("type") == "analysis" for m in messages)
+
+
+def test_manual_speaker_choice_overrides_detection(monkeypatch):
+    messages = _run_spoken_clip(monkeypatch, {"text": "The rent is due Friday.", "lang": "en"}, tenant_lang="en", hint="landlord")
+    assert any(m.get("type") == "analysis" for m in messages)
+    auto = _run_spoken_clip(monkeypatch, {"text": "When is rent due?", "lang": "en"}, tenant_lang="en", hint="auto")
+    assert any(m.get("type") == "speaker" and m["speaker"] == "tenant" and m["detected"] is False for m in auto)
+
+
+def test_transcription_parser_uses_the_script_when_it_can():
+    from backend.ai import parse_transcription
+
+    assert parse_transcription("uk\nWe can fix it next week.", "uk")["lang"] == "en"
+    assert parse_transcription("en\nКоли ремонт?", "uk")["lang"] == "uk"
+    assert parse_transcription("es\nHola, ¿qué tal?", "es")["lang"] == "es"
+    assert parse_transcription("NOSPEECH", "uk") is None
