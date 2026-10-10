@@ -211,17 +211,82 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Microphone interaction (Hold to talk)
-  function startMic() {
-    if (ws && ws.readyState === WebSocket.OPEN) {
+  let audioContext;
+  let mediaStream;
+  let scriptProcessor;
+  let sourceNode;
+
+  function base64EncodeAudio(float32Array) {
+    const pcm16 = new Int16Array(float32Array.length);
+    for (let i = 0; i < float32Array.length; i++) {
+      let s = Math.max(-1, Math.min(1, float32Array[i]));
+      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    const buffer = new ArrayBuffer(pcm16.length * 2);
+    const view = new DataView(buffer);
+    for (let i = 0; i < pcm16.length; i++) {
+      view.setInt16(i * 2, pcm16[i], true); // little-endian
+    }
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }
+
+  async function startMic() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (elements.micBtn.classList.contains("active")) return;
+    
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       elements.micBtn.classList.add("active");
-      // Mock sending audio
-      ws.send(JSON.stringify({ type: "audio", data: "bW9jaw==" }));
+      
+      // Need 16kHz audio context
+      audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      sourceNode = audioContext.createMediaStreamSource(mediaStream);
+      
+      // using script processor for simplicity (100ms chunks ~ 2048 at 16khz = 128ms)
+      scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
+      
+      scriptProcessor.onaudioprocess = (e) => {
+        const inputData = e.inputBuffer.getChannelData(0);
+        const b64 = base64EncodeAudio(inputData);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "audio", data: b64 }));
+        }
+      };
+
+      sourceNode.connect(scriptProcessor);
+      scriptProcessor.connect(audioContext.destination);
+
+    } catch (err) {
+      console.error("Microphone access denied or error:", err);
+      alert("Microphone access denied. Please allow microphone access to use voice.");
     }
   }
 
   function stopMic() {
+    if (!elements.micBtn.classList.contains("active")) return;
     elements.micBtn.classList.remove("active");
+    
+    if (scriptProcessor) {
+      scriptProcessor.disconnect();
+      scriptProcessor = null;
+    }
+    if (sourceNode) {
+      sourceNode.disconnect();
+      sourceNode = null;
+    }
+    if (audioContext) {
+      audioContext.close();
+      audioContext = null;
+    }
+    if (mediaStream) {
+      mediaStream.getTracks().forEach(track => track.stop());
+      mediaStream = null;
+    }
   }
 
   elements.micBtn.addEventListener("mousedown", startMic);
