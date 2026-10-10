@@ -32,6 +32,9 @@
         <div id="waveform" class="waveform"></div>
       </div>
       <div id="conversation" class="conversation" aria-live="polite">
+        <div id="empty-state" class="empty-state">
+          Hold the space bar and speak, or open the landlord simulator and press play on a line
+        </div>
         <!-- Chat bubbles appear here -->
       </div>
     </div>
@@ -64,7 +67,7 @@
   <!-- BOTTOM: Controls -->
   <div class="bottom-panel">
     <div class="controls-left">
-      <div style="display:flex; gap:1rem; align-items:center;">
+      <div class="controls-left-top">
         <select id="tenant-lang" aria-label="Tenant Language">
           <option value="uk" selected>Ukrainian</option>
           <option value="ru">Russian</option>
@@ -75,11 +78,11 @@
         <button id="mic-btn" class="mic-btn" aria-label="Hold space to talk" title="Hold Space to talk">
           🎤 Push to Talk
         </button>
-        <label style="display:flex; align-items:center; gap:0.2rem; cursor:pointer; font-size: 0.9rem;">
+        <label id="mute-toggle-label" style="display:flex; align-items:center; gap:0.2rem; cursor:pointer; font-size: 0.9rem; white-space: nowrap;">
           <input type="checkbox" id="mute-toggle" /> Mute Audio
         </label>
       </div>
-      <input type="text" id="tenant-text-input" placeholder="Type tenant text (fallback)" style="margin-top:0.5rem; padding:0.5rem; border-radius:4px; border:1px solid #ccc; width:100%;" aria-label="Tenant typed fallback" />
+      <input type="text" id="tenant-text-input" placeholder="Or type what the tenant says" aria-label="Tenant typed fallback" />
     </div>
     
     <div class="controls-center">

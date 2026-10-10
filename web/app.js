@@ -143,6 +143,11 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function appendTranscript(speaker, text, lang) {
+    const emptyState = document.getElementById("empty-state");
+    if (emptyState) {
+      emptyState.style.display = "none";
+    }
+
     const bubble = document.createElement("div");
     bubble.className = `message ${speaker}`;
     

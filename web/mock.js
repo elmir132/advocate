@@ -43,6 +43,9 @@
         setTimeout(() => {
           this.send(JSON.stringify({type: "landlord_text", id: "L03", text: "We can probably fix the heater sometime next week, I'll see what I can do."}));
         }, 2000);
+        setTimeout(() => {
+          this.send(JSON.stringify({type: "landlord_text", id: "L04", text: "I promise to repaint the whole apartment before you move in on the first."}));
+        }, 3500);
       }, 100);
     }
 
