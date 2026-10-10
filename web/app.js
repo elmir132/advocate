@@ -245,8 +245,63 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  function renderMarkdown(md) {
+    if (md.includes("|")) {
+      const rows = md.trim().split('\n').filter(r => r.includes('|'));
+      if (rows.length > 2) {
+        let html = '<table style="width:100%; border-collapse: collapse; text-align: left;">';
+        rows.forEach((row, i) => {
+          if (row.includes('---')) return;
+          const cells = row.split('|').slice(1, -1);
+          html += '<tr>';
+          cells.forEach(c => {
+            const tag = i === 0 ? 'th' : 'td';
+            html += `<${tag} style="border: 1px solid var(--border-color); padding: 8px;">${c.trim()}</${tag}>`;
+          });
+          html += '</tr>';
+        });
+        html += '</table>';
+        // if the entire thing was a table, return. Otherwise, we might have mixed content. 
+        // For simplicity, just return table if it looks like one.
+        if (rows.length === md.trim().split('\n').filter(r=>r.trim()).length) return html;
+      }
+    }
+    
+    // Split by languages if they use ## headings
+    const parts = md.split(/(?=## )/);
+    if (parts.length === 3) {
+      // Possibly a header and two language sections. Put them in two columns.
+      let html = '<div style="display: flex; gap: 2rem;">';
+      parts.forEach(p => {
+        if (!p.trim()) return;
+        html += `<div style="flex: 1;">${p.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')}</div>`;
+      });
+      html += '</div>';
+      return html;
+    }
+
+    return md.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  }
+
   function showSummary(markdown) {
-    elements.summaryContent.innerHTML = markdown.replace(/\n/g, '<br>');
+    elements.summaryContent.innerHTML = renderMarkdown(markdown);
+    
+    // Add copy button if not exists
+    if (!document.getElementById("copy-summary-btn")) {
+      const copyBtn = document.createElement("button");
+      copyBtn.id = "copy-summary-btn";
+      copyBtn.textContent = "📋 Copy Summary";
+      copyBtn.style.marginTop = "1rem";
+      copyBtn.style.marginRight = "1rem";
+      copyBtn.onclick = () => {
+        navigator.clipboard.writeText(markdown).then(() => {
+          copyBtn.textContent = "✅ Copied!";
+          setTimeout(() => copyBtn.textContent = "📋 Copy Summary", 2000);
+        });
+      };
+      elements.summaryDialog.querySelector(".dialog-content").insertBefore(copyBtn, elements.closeSummary);
+    }
+    
     elements.summaryDialog.showModal();
   }
 
