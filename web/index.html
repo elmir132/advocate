@@ -51,8 +51,8 @@
 
     <aside class="right-panel" aria-label="Conversation advocate">
       <div class="rail-heading">
-        <span class="eyebrow">Conversation support</span>
-        <p>Important details are collected here for you to review—not decided for you.</p>
+        <div><span class="eyebrow">Conversation support</span><p>Important details are collected here for you to review—not decided for you.</p></div>
+        <button id="about-help" class="about-help" type="button" aria-label="About Advocate" title="About Advocate">?</button>
       </div>
       <div class="tabs" role="tablist" aria-label="Support tools">
         <button id="tab-advocate" class="tab active" role="tab" aria-selected="true" aria-controls="advocate-view">Advocate</button>
@@ -78,9 +78,10 @@
       </div>
 
       <div id="score-view" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-score">
-        <div class="view-heading"><h3>Small scripted evaluation</h3><p>Results from 20 lines written for this prototype—not a benchmark.</p></div>
-        <pre id="score-output">Loading results…</pre>
+        <div class="view-heading"><h3>Small scripted evaluation</h3><p>A transparent check of what Advocate catches—and what it gets wrong.</p></div>
+        <div id="score-output" class="score-output" role="status" aria-live="polite">Open this tab to load results.</div>
       </div>
+
     </aside>
   </main>
 
@@ -89,6 +90,8 @@
       <div class="controls-left-top">
         <label class="select-wrap"><span class="sr-only">Tenant language</span><select id="tenant-lang" aria-label="Tenant language"><option value="uk" selected>Ukrainian</option><option value="ru">Russian</option><option value="es">Spanish</option><option value="zh">Chinese</option><option value="en">English</option></select></label>
         <button id="mic-btn" class="mic-btn" aria-label="Hold or tap to speak" title="Hold Space, or tap for hands-free recording"><span class="mic-icon" aria-hidden="true"></span><span class="mic-label">Hold or tap</span><kbd>Space</kbd></button>
+        <input id="audio-file-input" type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.webm,.flac" hidden>
+        <button id="audio-upload-btn" class="audio-upload-btn" type="button" title="Upload one voice message, up to 60 seconds"><span class="upload-icon" aria-hidden="true">↑</span><span>Upload audio</span></button>
         <div id="speaker-choice" class="speaker-choice" role="radiogroup" aria-label="Who is speaking">
           <button type="button" role="radio" aria-checked="true" data-speaker="auto" title="English is treated as the landlord, your language as you">Auto</button>
           <button type="button" role="radio" aria-checked="false" data-speaker="tenant">Me</button>
@@ -96,7 +99,7 @@
         </div>
         <label id="mute-toggle-label" class="mute-label"><input type="checkbox" id="mute-toggle"><span>Mute voice</span></label>
       </div>
-      <div class="text-input-wrap"><input type="text" id="tenant-text-input" placeholder="Type your message — Auto sends typed text as Me" aria-label="Type a message; in Auto, typed text is sent as the renter"><kbd>Enter</kbd></div>
+      <div class="text-input-wrap"><input type="text" id="tenant-text-input" placeholder="Type a message — Auto detects the speaker" aria-label="Type a message; Auto routes English to the landlord and the selected language to the renter"><kbd>Enter</kbd></div>
     </div>
     <div class="controls-right">
       <div class="approval-copy"><strong>Conversation record</strong><span>Review before anything is prepared.</span></div>
@@ -112,6 +115,29 @@
       <h2>Conversation summary</h2>
       <div id="summary-content"></div>
       <button id="close-summary">Close summary</button>
+    </div>
+  </dialog>
+
+  <dialog id="about-dialog" class="about-dialog" aria-labelledby="about-title">
+    <div class="dialog-content">
+      <div class="about-hero">
+        <span class="about-mark" aria-hidden="true"></span>
+        <span class="eyebrow">Why Advocate exists</span>
+        <h2 id="about-title">Understand the words. Keep the commitments.</h2>
+        <p>Advocate helps renters navigate important landlord conversations across languages without pretending to be a lawyer.</p>
+      </div>
+      <ol class="about-steps" aria-label="How Advocate works">
+        <li><span>1</span><div><strong>Listen and translate</strong><p>One control hears either side and translates the conversation.</p></div></li>
+        <li><span>2</span><div><strong>Surface what matters</strong><p>Gemini flags candidate money terms, penalties, restrictions and vague commitments.</p></div></li>
+        <li><span>3</span><div><strong>Keep the promises</strong><p>Specific commitments remain visible while the conversation continues.</p></div></li>
+        <li><span>4</span><div><strong>Approve the record</strong><p>A bilingual summary is prepared only after the renter asks for it.</p></div></li>
+      </ol>
+      <div class="about-facts">
+        <article><strong>Built with Gemini</strong><p>Speech transcription, translation, structured review cues and summaries.</p></article>
+        <article><strong>Human stays in control</strong><p>Flags are candidates, not legal conclusions. Nothing is automatically sent or signed.</p></article>
+      </div>
+      <p class="about-note">One-day prototype built at The New Agentic Economy Hackathon, October 2026.</p>
+      <button id="close-about" class="about-close" type="button">Close</button>
     </div>
   </dialog>
 

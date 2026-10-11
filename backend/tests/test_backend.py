@@ -5,7 +5,7 @@ import wave
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.ai import normalize_analysis, wav_to_pcm16k, wav_to_pcm24k
+from backend.ai import build_conversation_overview, compact_summary_records, normalize_analysis, obvious_text_speaker, wav_to_pcm16k, wav_to_pcm24k
 from backend.main import (
     ConnectionState,
     _watch_live_audio,
@@ -76,6 +76,9 @@ def test_client_message_validation():
     assert validate_client_message({"type": "tenant_text", "text": "Please repair the heater."})[
         "text"
     ] == "Please repair the heater."
+    assert validate_client_message({"type": "auto_text", "text": "The heater can probably be fixed."})[
+        "text"
+    ] == "The heater can probably be fixed."
     with pytest.raises(ValueError, match="Tenant text"):
         validate_client_message({"type": "tenant_text", "text": "  "})
 
@@ -367,3 +370,65 @@ def test_model_call_cap_stops_further_calls(monkeypatch):
         return False
 
     assert asyncio.run(run()) is True
+
+def test_compact_summary_records_pairs_translations_and_deduplicates():
+    history = [
+        {"speaker": "landlord", "text": "The deposit is two months' rent.", "flags": ["financial_term"], "promise": False},
+        {"speaker": "translation", "lang": "uk", "text": "Застава становить орендну плату за два місяці."},
+        {"speaker": "landlord", "text": "The deposit is two months' rent.", "flags": ["penalty"], "promise": False},
+        {"speaker": "translation", "lang": "uk", "text": "Інший переклад, який не слід дублювати."},
+        {"speaker": "tenant", "text": "Why?"},
+    ]
+    assert compact_summary_records(history) == [{
+        "speaker": "landlord",
+        "text": "The deposit is two months' rent.",
+        "flags": ["financial_term", "penalty"],
+        "promise": False,
+        "tenant_translation": "Застава становить орендну плату за два місяці.",
+    }]
+
+
+def test_repeated_start_updates_tenant_language(monkeypatch):
+    async def no_live(_state):
+        return None
+
+    async def fake_analysis(line_id, _text, language):
+        return {"id": line_id, "translation": f"translation-{language}", "flags": [], "promise": False, "note": ""}
+
+    monkeypatch.setattr("backend.main.start_live_session", no_live)
+    monkeypatch.setattr(gateway, "analyze_landlord_line", fake_analysis)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            assert websocket.receive_json() == {"type": "status", "state": "idle"}
+            websocket.send_json({"type": "start", "tenant_lang": "uk"})
+            assert websocket.receive_json() == {"type": "status", "state": "thinking"}
+            assert websocket.receive_json() == {"type": "status", "state": "listening"}
+            websocket.send_json({"type": "start", "tenant_lang": "es"})
+            assert websocket.receive_json() == {"type": "status", "state": "thinking"}
+            assert websocket.receive_json() == {"type": "status", "state": "listening"}
+            websocket.send_json({"type": "landlord_text", "id": "switch", "text": "Deposit terms."})
+            messages = [websocket.receive_json() for _ in range(5)]
+            assert {"type": "translation", "to": "tenant", "text": "translation-es"} in messages
+            assert not any(message.get("type") == "error" for message in messages)
+
+def test_conversation_overview_mentions_each_detected_topic_in_both_languages():
+    records = [
+        {"speaker": "landlord", "text": "We can probably fix the heater next week."},
+        {"speaker": "landlord", "text": "The deposit is two months' rent."},
+    ]
+    overview = build_conversation_overview(records, "uk")
+    assert "ремонт" in overview["tenant"] and "умови застави" in overview["tenant"]
+    assert "repairs" in overview["english"] and "deposit terms" in overview["english"]
+    assert len(overview["english"].split()) < 20
+
+def test_obvious_text_speaker_routes_supported_languages():
+    english_landlord = "We can probably fix the heater sometime next week. I'll see what I can do."
+    assert obvious_text_speaker(english_landlord, "uk") == "landlord"
+    assert obvious_text_speaker(english_landlord, "ru") == "landlord"
+    assert obvious_text_speaker(english_landlord, "es") == "landlord"
+    assert obvious_text_speaker(english_landlord, "zh") == "landlord"
+    assert obvious_text_speaker("Що щодо депозиту?", "uk") == "tenant"
+    assert obvious_text_speaker("Что насчёт залога?", "ru") == "tenant"
+    assert obvious_text_speaker("¿Qué pasa con el depósito?", "es") == "tenant"
+    assert obvious_text_speaker("押金怎么办？", "zh") == "tenant"
+    assert obvious_text_speaker(english_landlord, "en") is None

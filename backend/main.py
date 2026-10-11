@@ -117,7 +117,7 @@ def validate_client_message(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict) or not isinstance(payload.get("type"), str):
         raise ClientMessageError("Expected a JSON object with a message type.")
     kind = payload["type"]
-    if kind not in {"start", "audio", "audio_end", "landlord_text", "tenant_text", "approve_summary", "stop"}:
+    if kind not in {"start", "audio", "audio_end", "landlord_text", "tenant_text", "auto_text", "approve_summary", "stop"}:
         raise ClientMessageError("Unsupported message type.")
     if kind == "start":
         language = payload.get("tenant_lang", "uk")
@@ -146,10 +146,11 @@ def validate_client_message(payload: Any) -> dict[str, Any]:
             raise ClientMessageError("Landlord line needs an ID under 80 characters.")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT_CHARS:
             raise ClientMessageError("Landlord line text is empty or too long.")
-    elif kind == "tenant_text":
+    elif kind in {"tenant_text", "auto_text"}:
         text = payload.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT_CHARS:
-            raise ClientMessageError("Tenant text is empty or too long.")
+            label = "Tenant text" if kind == "tenant_text" else "Auto text"
+            raise ClientMessageError(f"{label} is empty or too long.")
     return payload
 
 
@@ -628,10 +629,31 @@ async def websocket_session(websocket: WebSocket) -> None:
 
             kind = payload["type"]
             if kind == "start":
+                requested_language = payload.get("tenant_lang", "uk")
                 if state.started:
-                    await state.error("This interpreter session is already running.")
+                    if requested_language == state.tenant_lang:
+                        await state.error("This interpreter session is already running.")
+                        continue
+                    if requested_language != state.tenant_lang:
+                        await state.status("thinking")
+                        state.tenant_lang = requested_language
+                        state.summary_approved = False
+                        state.speaker_hint = "auto"
+                        state.unconfirmed_live_audio.clear()
+                        state.fallback_audio.clear()
+                        # The Live session prompt is language-bound. Retire it and use the
+                        # reliable text path after a language change rather than translating
+                        # with the old language instruction.
+                        state.live_failed = True
+                        state.live_session = None
+                        if state.live_reader is not None:
+                            state.live_reader.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await state.live_reader
+                            state.live_reader = None
+                    await state.status("listening")
                     continue
-                state.tenant_lang = payload.get("tenant_lang", "uk")
+                state.tenant_lang = requested_language
                 state.started = True
                 state.history.clear()
                 state.summary_approved = False
@@ -681,6 +703,21 @@ async def websocket_session(websocket: WebSocket) -> None:
                     state.last_fallback_audio_at = 0.0
                     if state.fallback_worker is None or state.fallback_worker.done():
                         state.fallback_worker = asyncio.create_task(_fallback_worker(state))
+            elif kind == "auto_text":
+                if not state.started:
+                    await state.error("Start a session before sending text.")
+                    continue
+                speaker = await gateway.classify_typed_speaker(payload["text"], state.tenant_lang)
+                if speaker is None:
+                    await state.error("I could not tell who typed that. Choose Me or Landlord and send it again.")
+                    continue
+                await state.send({"type": "speaker", "speaker": speaker, "detected": True,
+                                  "lang": "en" if speaker == "landlord" else state.tenant_lang})
+                if speaker == "landlord":
+                    state.spoken_lines += 1
+                    await send_landlord_line(state, f"T{state.spoken_lines:02d}", payload["text"])
+                else:
+                    await send_tenant_text(state, payload["text"])
             elif kind == "landlord_text":
                 if not state.started:
                     await state.error("Start a session before sending landlord lines.")

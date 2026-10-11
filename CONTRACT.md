@@ -19,7 +19,8 @@ Client to server:
 - `{"type":"audio","data":"<base64 PCM16 16 kHz mono>"}` tenant microphone chunks.
 - `{"type":"audio_end","speaker":"auto|tenant|landlord"}` the button was released: transcribe what was sent now. With `auto` (default) English speech is treated as the landlord and analysed, and speech in the tenant language as the tenant. Without this message the server waits for a 0.8 s pause.
 - `{"type":"landlord_text","id":"L03","text":"..."}` a landlord line (typed, or from the simulator).
-- `{"type":"tenant_text","text":"..."}` typed tenant line, the fallback when the microphone fails. Server treats it exactly like transcribed tenant speech.
+- `{"type":"tenant_text","text":"..."}` typed renter line when Me is selected; translated to English.
+- `{"type":"auto_text","text":"..."}` typed line when Auto is selected; language classification routes English to landlord analysis and the selected renter language to tenant translation. Ambiguous text asks for Me/Landlord instead of guessing.
 - `{"type":"approve_summary"}` only after the tenant approves.
 - `{"type":"stop"}`.
 

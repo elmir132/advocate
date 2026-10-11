@@ -90,6 +90,109 @@ def is_retryable_service_error(error: Exception) -> bool:
     return isinstance(message, str) and "overload" in message.lower()
 
 
+def compact_summary_records(conversation: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pair each landlord line with its translation and remove exact repeats."""
+    records: list[dict[str, Any]] = []
+    by_text: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(conversation):
+        if item.get("speaker") != "landlord" or not str(item.get("text", "")).strip():
+            continue
+        text = " ".join(str(item["text"]).split())
+        key = text.casefold()
+        translation = None
+        if index + 1 < len(conversation) and conversation[index + 1].get("speaker") == "translation":
+            translation = str(conversation[index + 1].get("text", "")).strip() or None
+        if key in by_text:
+            existing = by_text[key]
+            existing["promise"] = bool(existing.get("promise") or item.get("promise"))
+            existing["flags"] = list(dict.fromkeys([*(existing.get("flags") or []), *(item.get("flags") or [])]))
+            if not existing.get("tenant_translation") and translation:
+                existing["tenant_translation"] = translation
+            continue
+        record: dict[str, Any] = {
+            "speaker": "landlord",
+            "text": text,
+            "flags": list(item.get("flags") or []),
+            "promise": bool(item.get("promise")),
+        }
+        if translation:
+            record["tenant_translation"] = translation
+        by_text[key] = record
+        records.append(record)
+    return records
+
+
+ENGLISH_HINT_WORDS = {"the", "this", "that", "what", "when", "where", "we", "you", "your", "can", "could", "will", "would", "probably", "maybe", "rent", "deposit", "heater", "lease", "fix", "repair"}
+SPANISH_HINT_WORDS = {"el", "la", "los", "las", "que", "qué", "cuando", "cuándo", "podemos", "puede", "alquiler", "depósito", "calefacción", "contrato", "arreglar"}
+
+
+def obvious_text_speaker(text: str, tenant_lang: str) -> str | None:
+    """Return a speaker only when script or multiple common words make it clear."""
+    language = tenant_lang.split("-", 1)[0].lower()
+    if language == "en":
+        return None
+    if language in {"uk", "ru"} and re.search(r"[\u0400-\u04ff]", text):
+        return "tenant"
+    if language == "zh" and re.search(r"[\u3400-\u9fff]", text):
+        return "tenant"
+    words = re.findall(r"[^\W_]+", text.casefold(), flags=re.UNICODE)
+    if language == "es" and (re.search(r"[¿¡áéíóúüñ]", text.casefold()) or sum(word in SPANISH_HINT_WORDS for word in words) >= 2):
+        return "tenant"
+    if sum(word in ENGLISH_HINT_WORDS for word in words) >= 2:
+        return "landlord"
+    return None
+
+
+SUMMARY_TOPIC_PATTERNS = [
+    ("deposit", re.compile(r"\b(?:security )?deposit\b", re.IGNORECASE)),
+    ("repair", re.compile(r"\b(?:repair|fix|heater|heating|window)\w*\b", re.IGNORECASE)),
+    ("painting", re.compile(r"\b(?:paint|repaint)\w*\b", re.IGNORECASE)),
+    ("rent_fees", re.compile(r"\b(?:rent|fee|payment|utilities|electricity)\b", re.IGNORECASE)),
+    ("lease", re.compile(r"\b(?:lease|renew|notice)\w*\b", re.IGNORECASE)),
+    ("subletting", re.compile(r"\bsublet(?:ting)?\b", re.IGNORECASE)),
+    ("pets_guests", re.compile(r"\b(?:pet|pets|guest|guests)\b", re.IGNORECASE)),
+]
+SUMMARY_TOPIC_LABELS = {
+    "en": {"deposit": "deposit terms", "repair": "repairs", "painting": "painting the apartment", "rent_fees": "rent and fees", "lease": "lease terms", "subletting": "subletting", "pets_guests": "pet and guest rules", "other": "other housing details"},
+    "uk": {"deposit": "умови застави", "repair": "ремонт", "painting": "фарбування квартири", "rent_fees": "орендна плата та збори", "lease": "умови оренди", "subletting": "суборенда", "pets_guests": "правила щодо тварин і гостей", "other": "інші деталі житла"},
+    "ru": {"deposit": "условия залога", "repair": "ремонт", "painting": "покраска квартиры", "rent_fees": "арендная плата и сборы", "lease": "условия аренды", "subletting": "субаренда", "pets_guests": "правила о животных и гостях", "other": "другие детали жилья"},
+    "es": {"deposit": "las condiciones del depósito", "repair": "las reparaciones", "painting": "la pintura del apartamento", "rent_fees": "el alquiler y las tarifas", "lease": "las condiciones del contrato", "subletting": "el subarriendo", "pets_guests": "las reglas sobre mascotas y huéspedes", "other": "otros detalles de la vivienda"},
+    "zh": {"deposit": "押金条件", "repair": "维修", "painting": "公寓粉刷", "rent_fees": "租金和费用", "lease": "租约条款", "subletting": "转租", "pets_guests": "宠物和访客规定", "other": "其他住房事项"},
+}
+SUMMARY_OVERVIEW_TEMPLATES = {
+    "en": "The conversation covered: {topics}.",
+    "uk": "Розмова стосувалася таких тем: {topics}.",
+    "ru": "Разговор касался следующих тем: {topics}.",
+    "es": "La conversación trató sobre: {topics}.",
+    "zh": "对话涉及：{topics}。",
+}
+SUMMARY_EMPTY_OVERVIEWS = {
+    "en": "No landlord statements were recorded.", "uk": "Висловлювань орендодавця не зафіксовано.",
+    "ru": "Высказывания арендодателя не зафиксированы.", "es": "No se registraron declaraciones del propietario.",
+    "zh": "未记录房东的陈述。",
+}
+
+
+def build_conversation_overview(records: list[dict[str, Any]], tenant_lang: str) -> dict[str, str]:
+    topics: list[str] = []
+    for record in records:
+        text = str(record.get("text", ""))
+        topic = next((name for name, pattern in SUMMARY_TOPIC_PATTERNS if pattern.search(text)), "other")
+        if topic not in topics:
+            topics.append(topic)
+    language = tenant_lang.split("-", 1)[0].lower()
+    if language not in SUMMARY_TOPIC_LABELS:
+        language = "en"
+    if not topics:
+        return {"tenant": SUMMARY_EMPTY_OVERVIEWS[language], "english": SUMMARY_EMPTY_OVERVIEWS["en"]}
+    tenant_topics = ", ".join(SUMMARY_TOPIC_LABELS[language][topic] for topic in topics)
+    english_topics = ", ".join(SUMMARY_TOPIC_LABELS["en"][topic] for topic in topics)
+    return {
+        "tenant": SUMMARY_OVERVIEW_TEMPLATES[language].format(topics=tenant_topics),
+        "english": SUMMARY_OVERVIEW_TEMPLATES["en"].format(topics=english_topics),
+    }
+
+
 class UsageLimitError(RuntimeError):
     """Raised when this server run has used its allowance of model calls."""
 
@@ -467,23 +570,57 @@ class GeminiGateway:
         translation = payload.get("translation") if isinstance(payload, dict) else None
         return translation.strip() if isinstance(translation, str) and translation.strip() else None
 
-    async def summarize(self, conversation: list[dict[str, str]], tenant_lang: str) -> dict[str, Any] | None:
+    async def classify_typed_speaker(self, text: str, tenant_lang: str) -> str | None:
+        obvious = obvious_text_speaker(text, tenant_lang)
+        if obvious:
+            return obvious
+        if tenant_lang.split("-", 1)[0].lower() == "en":
+            return None
+        await self.discover_models()
+        model = self.select_model("generateContent", TEXT_CANDIDATES)
+        if not model:
+            return None
+        schema = {
+            "type": "OBJECT",
+            "properties": {"speaker": {"type": "STRING", "enum": ["tenant", "landlord"]}},
+            "required": ["speaker"],
+        }
+        prompt = (
+            "Classify who typed this message in a tenant-landlord conversation. "
+            f"The tenant uses language code {tenant_lang}; the landlord uses English. "
+            "Return tenant only when the text is in the tenant language, and landlord only when it is English. "
+            "Do not classify by meaning or legal content. Return JSON only. Text: "
+            f"{json.dumps(text, ensure_ascii=False)}"
+        )
+        payload = await self._generate_json(model, prompt, schema)
+        speaker = payload.get("speaker") if isinstance(payload, dict) else None
+        return speaker if speaker in {"tenant", "landlord"} else None
+
+    async def summarize(self, conversation: list[dict[str, Any]], tenant_lang: str) -> dict[str, Any] | None:
+        records = compact_summary_records(conversation)
         await self.discover_models()
         model = self.select_model("generateContent", TEXT_CANDIDATES)
         if not model:
             return None
         prompt = (
             f"Prepare a concise, factual, two-language summary of this housing conversation, first in "
-            f"{tenant_lang}, then in English. Use exactly these three headings in each language: "
-            "Promises (only landlord lines whose record has promise true, stated as the landlord said them), "
-            "Not a commitment (landlord lines flagged vague_commitment: say they were vague and were not a promise), "
-            "and Money terms, penalties and rules (lines flagged financial_term, penalty or restriction, with the amounts and conditions stated). "
-            "Never list a vague_commitment line under Promises. Write None under a heading with no lines. "
-            "For the tenant-language section, copy the tenant-language wording of each line verbatim from the translation record that follows that landlord line; "
-            "if a line has no translation record, translate it carefully and literally. Never invent or paraphrase words, and write real words only. "
-            "Do not infer facts, decide legality, give legal advice, or suggest what the tenant should do. "
-            "This is not an agreement or legal document. Return JSON with markdown and languages.\n"
-            f"Conversation records:\n{json.dumps(conversation, ensure_ascii=False)}"
+            f"{tenant_lang}, then in English. Use localized equivalents of these four headings in the tenant-language section, "
+            "and use these exact names in the English section: "
+            "Conversation overview (one or two short factual sentences covering the main topics, promises, and uncertainties without advice; "
+            "use neutral topic wording and do not introduce labels such as penalty, violation, or legal right unless the original statement uses them; "
+            "mention the topic of every supplied landlord record exactly once, including each repair, deposit, restriction, or promise), "
+            "Promises (only landlord lines whose record has promise true, copied as stated), "
+            "Not a commitment (landlord lines flagged vague_commitment), "
+            "and Money terms, penalties and rules (lines flagged financial_term, penalty or restriction). "
+            "Never list a vague commitment under Promises. Write None under a heading with no lines. "
+            "Every supplied record must appear under every applicable heading; do not merge, omit, or duplicate records. "
+            "Each record contains one original landlord statement and may contain tenant_translation. "
+            "In the tenant-language section, copy tenant_translation verbatim; if absent, translate the original literally. "
+            "In the English section, copy the original text verbatim. Preserve every amount, deadline, condition, penalty, "
+            "restriction, and explicit promise, including deposit terms. Never infer facts, decide legality, give legal advice, "
+            "or suggest what the tenant should do. This is not an agreement or legal document. "
+            "Return JSON with markdown and languages.\n"
+            f"Conversation records:\n{json.dumps(records, ensure_ascii=False)}"
         )
         payload = await self._generate_json(model, prompt, SUMMARY_SCHEMA)
         if not isinstance(payload, dict) or not isinstance(payload.get("markdown"), str):
@@ -491,7 +628,7 @@ class GeminiGateway:
         markdown = payload["markdown"].strip()
         if LEGAL_ADVICE_PATTERNS.search(markdown):
             return None
-        return {"markdown": markdown, "languages": [tenant_lang, "en"]}
+        return {"markdown": markdown, "languages": [tenant_lang, "en"], "overview": build_conversation_overview(records, tenant_lang)}
 
     async def synthesize_landlord_wav(self, text: str) -> bytes | None:
         await self.discover_models()

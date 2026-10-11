@@ -96,7 +96,7 @@ document.addEventListener("DOMContentLoaded", () => {
         break;
 
       case "summary":
-        showSummary(msg.markdown);
+        showSummary(msg.markdown, msg.languages, msg.overview);
         break;
         
       case "speaker":
@@ -117,6 +117,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const muteToggle = document.getElementById("mute-toggle");
   let outAudioCtx = null;
   let nextStartTime = 0;
+  const activeAudioSources = new Set();
 
   function base64ToFloat32(base64) {
     const binary = atob(base64);
@@ -150,6 +151,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const source = outAudioCtx.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(outAudioCtx.destination);
+    activeAudioSources.add(source);
+    source.onended = () => activeAudioSources.delete(source);
 
     const currentTime = outAudioCtx.currentTime;
     if (nextStartTime < currentTime) {
@@ -158,6 +161,24 @@ document.addEventListener("DOMContentLoaded", () => {
     source.start(nextStartTime);
     nextStartTime += audioBuffer.duration;
   }
+
+  function stopVoicePlayback() {
+    activeAudioSources.forEach((source) => {
+      try { source.stop(0); } catch (error) {}
+    });
+    activeAudioSources.clear();
+    nextStartTime = outAudioCtx ? outAudioCtx.currentTime : 0;
+  }
+
+  muteToggle.addEventListener("change", () => {
+    document.body.dataset.audioMuted = String(muteToggle.checked);
+    if (muteToggle.checked) {
+      stopVoicePlayback();
+      showHint("Voice playback muted. Transcription and analysis will continue.", "live");
+    } else {
+      showHint("Voice playback is on.", "live");
+    }
+  });
 
   function appendTranscript(speaker, text, lang) {
     const emptyState = document.getElementById("empty-state");
@@ -291,55 +312,80 @@ document.addEventListener("DOMContentLoaded", () => {
     })[char]);
   }
 
-  function renderMarkdown(md) {
-    const safe = escapeHtml(md);
-    if (safe.includes("|")) {
-      const rows = safe.trim().split('\n').filter(r => r.includes('|'));
-      if (rows.length > 2) {
-        let html = '<table style="width:100%; border-collapse: collapse; text-align: left;">';
-        rows.forEach((row, i) => {
-          if (row.includes('---')) return;
-          const cells = row.split('|').slice(1, -1);
-          html += '<tr>';
-          cells.forEach(c => {
-            const tag = i === 0 ? 'th' : 'td';
-            html += `<${tag} style="border: 1px solid var(--border-color); padding: 8px;">${c.trim()}</${tag}>`;
-          });
-          html += '</tr>';
-        });
-        html += '</table>';
-        if (rows.length === safe.trim().split('\n').filter(r => r.trim()).length) return html;
+  const SUMMARY_HEADINGS = {
+    uk: ["Коротко про розмову", "Обіцянки", "Не є обіцянкою", "Фінансові умови, штрафи та правила"],
+    ru: ["Кратко о разговоре", "Обещания", "Не является обязательством", "Финансовые условия, штрафы и правила"],
+    es: ["Resumen de la conversación", "Promesas", "No es un compromiso", "Condiciones económicas, penalizaciones y reglas"],
+    zh: ["对话概述", "承诺", "并非明确承诺", "费用、处罚和规则"],
+    en: ["Conversation overview", "Promises", "Not a commitment", "Money terms, penalties and rules"],
+  };
+
+  function renderMarkdown(md, languages = [], overview = null) {
+    const sections = [];
+    let current = null;
+    const lines = String(md || "").split(/\r?\n/);
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const heading = line.match(/^#{1,3}\s+(.+)$/);
+      if (heading) {
+        current = { title: heading[1].replace(/\*\*/g, "").trim(), items: [] };
+        sections.push(current);
+        continue;
       }
+      if (!current) {
+        current = { title: "Summary", items: [] };
+        sections.push(current);
+      }
+      current.items.push(line.replace(/^[-*]\s+/, "").replace(/\*\*/g, "").trim());
     }
 
-    const parts = safe.split(/(?=## )/);
-    if (parts.length === 3) {
-      let html = '<div style="display: flex; gap: 2rem;">';
-      parts.forEach(p => {
-        if (!p.trim()) return;
-        html += `<div style="flex: 1;">${p.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')}</div>`;
-      });
-      html += '</div>';
-      return html;
+    const generic = /^(summary|резюме|підсумок)$/i;
+    const useful = sections.filter((section) => !(generic.test(section.title) && section.items.length === 0));
+    const empty = /^(none|none\.|no items|немає|жодного|ningun[oa]|无)$/i;
+    const tenantLanguage = String(languages[0] || "").split("-", 1)[0].toLowerCase();
+    const headingsPerLanguage = SUMMARY_HEADINGS.en.length;
+    if (useful.length >= headingsPerLanguage * 2) {
+      const tenantHeadings = SUMMARY_HEADINGS[tenantLanguage];
+      if (tenantHeadings) tenantHeadings.forEach((title, index) => { useful[index].title = title; });
+      SUMMARY_HEADINGS.en.forEach((title, index) => { useful[useful.length - headingsPerLanguage + index].title = title; });
+    } else if (useful.length === headingsPerLanguage && SUMMARY_HEADINGS[tenantLanguage]) {
+      SUMMARY_HEADINGS[tenantLanguage].forEach((title, index) => { useful[index].title = title; });
     }
+    if (overview && useful.length >= headingsPerLanguage * 2) {
+      useful[0].items = [overview.tenant];
+      useful[useful.length - headingsPerLanguage].items = [overview.english];
+    }
+    const sectionHtml = (section) => {
+      const title = escapeHtml(section.title);
+      const items = section.items.filter(Boolean);
+      const body = !items.length || items.every((item) => empty.test(item))
+        ? '<p class="summary-empty">No items recorded</p>'
+        : `<ul>${items.filter((item) => !empty.test(item)).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+      return `<section class="summary-section"><h3>${title}</h3>${body}</section>`;
+    };
 
-    return safe.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    if (useful.length >= headingsPerLanguage * 2) {
+      const split = Math.ceil(useful.length / 2);
+      return `<div class="summary-grid"><div class="summary-language"><span class="summary-language-label">Tenant language</span>${useful.slice(0, split).map(sectionHtml).join("")}</div><div class="summary-language"><span class="summary-language-label">English</span>${useful.slice(split).map(sectionHtml).join("")}</div></div>`;
+    }
+    return `<div class="summary-grid summary-grid-single"><div class="summary-language">${useful.map(sectionHtml).join("")}</div></div>`;
   }
 
-  function showSummary(markdown) {
-    elements.summaryContent.innerHTML = renderMarkdown(markdown);
+  function showSummary(markdown, languages, overview) {
+    elements.summaryContent.innerHTML = renderMarkdown(markdown, languages, overview);
     
     // Add copy button if not exists
     if (!document.getElementById("copy-summary-btn")) {
       const copyBtn = document.createElement("button");
       copyBtn.id = "copy-summary-btn";
-      copyBtn.textContent = "📋 Copy Summary";
+      copyBtn.textContent = "Copy summary";
       copyBtn.style.marginTop = "1rem";
       copyBtn.style.marginRight = "1rem";
       copyBtn.onclick = () => {
-        navigator.clipboard.writeText(markdown).then(() => {
-          copyBtn.textContent = "✅ Copied!";
-          setTimeout(() => copyBtn.textContent = "📋 Copy Summary", 2000);
+        navigator.clipboard.writeText(elements.summaryContent.innerText).then(() => {
+          copyBtn.textContent = "Copied";
+          setTimeout(() => copyBtn.textContent = "Copy summary", 2000);
         });
       };
       elements.summaryDialog.querySelector(".dialog-content").insertBefore(copyBtn, elements.closeSummary);
@@ -382,6 +428,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const TARGET_RATE = 16000;
   const MIN_HOLD_MS = 400;
   const TAP_TO_LOCK_MS = 320;
+  const MAX_UPLOAD_SECONDS = 60;
+  const MAX_UPLOAD_BYTES = 25_000_000;
+  const UPLOAD_CHUNK_SAMPLES = 16_000;
   let micCtx = null, micStream = null, micNode = null, micSource = null;
   let micReady = null;          // promise while the mic is being opened
   let wantRecording = false;    // the button or key is held
@@ -462,6 +511,53 @@ document.addEventListener("DOMContentLoaded", () => {
       binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
     }
     return btoa(binary);
+  }
+
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  async function uploadAudioFile(file, selectedSpeaker) {
+    if (!file) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("Not connected yet. Wait a moment and try again.");
+    if (wantRecording || recording) throw new Error("Stop the live microphone before uploading a recording.");
+    if (file.size > MAX_UPLOAD_BYTES) throw new Error("That file is too large. Choose a voice message under 25 MB and 60 seconds.");
+    if (file.type && !file.type.startsWith("audio/")) throw new Error("Choose an audio file, not a video. WAV, MP3, M4A, OGG and WebM audio are typical choices.");
+    showHint(`Reading ${file.name}…`, "live");
+    elements.statusIndicator.textContent = "Reading audio";
+
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const decodeContext = new Ctx();
+    let audioBuffer;
+    try {
+      audioBuffer = await decodeContext.decodeAudioData(await file.arrayBuffer());
+    } catch (error) {
+      throw new Error("This audio file could not be read by the browser. Try WAV, MP3 or M4A.");
+    } finally {
+      try { await decodeContext.close(); } catch (error) {}
+    }
+    if (!Number.isFinite(audioBuffer.duration) || audioBuffer.duration < 0.4) throw new Error("The voice message is too short to transcribe.");
+    if (audioBuffer.duration > MAX_UPLOAD_SECONDS + 0.05) throw new Error("Choose a voice message that is 60 seconds or shorter.");
+
+    const mono = new Float32Array(audioBuffer.length);
+    for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+      const data = audioBuffer.getChannelData(channel);
+      const weight = 1 / audioBuffer.numberOfChannels;
+      for (let i = 0; i < data.length; i++) mono[i] += data[i] * weight;
+    }
+    const pcm16k = resampleTo16k(mono, audioBuffer.sampleRate);
+    const chunks = Math.ceil(pcm16k.length / UPLOAD_CHUNK_SAMPLES);
+    elements.statusIndicator.textContent = "Uploading";
+    document.body.dataset.state = "thinking";
+    for (let offset = 0, index = 0; offset < pcm16k.length; offset += UPLOAD_CHUNK_SAMPLES, index++) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("The connection closed during upload. Reconnect and try again.");
+      sendChunk(pcm16k.subarray(offset, Math.min(offset + UPLOAD_CHUNK_SAMPLES, pcm16k.length)));
+      const progress = Math.round(((index + 1) / chunks) * 100);
+      showHint(`Uploading ${file.name}: ${progress}%`, "live");
+      while (ws.bufferedAmount > 256_000) await wait(10);
+      if (index % 8 === 0) await wait(0);
+    }
+    ws.send(JSON.stringify({ type: "audio_end", speaker: selectedSpeaker, source: "upload" }));
+    elements.statusIndicator.textContent = "Working…";
+    showHint("Audio received. Transcribing and checking the conversation…", "live");
   }
 
   function openMic() {
@@ -582,7 +678,7 @@ document.addEventListener("DOMContentLoaded", () => {
       ? ["Type the landlord’s message", "Type the landlord’s message"]
       : value === "tenant"
         ? ["Type your message", "Type the renter’s message"]
-        : ["Type your message — Auto sends typed text as Me", "Type a message; in Auto, typed text is sent as the renter"];
+        : ["Type a message — Auto detects the speaker", "Type a message; Auto routes English to the landlord and the selected language to the renter"];
     input.placeholder = copy[0];
     input.setAttribute("aria-label", copy[1]);
     input.dataset.speaker = value;
@@ -603,6 +699,28 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
   updateTextComposer(speakerChoice);
+
+  const audioFileInput = document.getElementById("audio-file-input");
+  const audioUploadButton = document.getElementById("audio-upload-btn");
+  audioUploadButton.addEventListener("click", () => audioFileInput.click());
+  audioFileInput.addEventListener("change", async () => {
+    const file = audioFileInput.files && audioFileInput.files[0];
+    if (!file) return;
+    const selectedSpeaker = speakerChoice;
+    audioUploadButton.disabled = true;
+    elements.micBtn.disabled = true;
+    try {
+      await uploadAudioFile(file, selectedSpeaker);
+    } catch (error) {
+      elements.statusIndicator.textContent = "Ready";
+      document.body.dataset.state = "idle";
+      showHint(error && error.message ? error.message : "The audio file could not be uploaded.", "error");
+    } finally {
+      audioUploadButton.disabled = false;
+      elements.micBtn.disabled = false;
+      audioFileInput.value = "";
+    }
+  });
 
   // Pointer events support both familiar patterns on one control:
   // hold and release for push-to-talk, or tap once to latch and tap again to stop.
@@ -668,9 +786,12 @@ document.addEventListener("DOMContentLoaded", () => {
         if (speakerChoice === "landlord") {
           ws.send(JSON.stringify({ type: "landlord_text", id: `typed-${Date.now()}`, text }));
           showHint("Landlord message sent. Translating and checking details…", "live");
-        } else {
+        } else if (speakerChoice === "tenant") {
           ws.send(JSON.stringify({ type: "tenant_text", text }));
-          showHint(speakerChoice === "auto" ? "Sent as Me. Translating…" : "Your message was sent. Translating…", "live");
+          showHint("Your message was sent. Translating…", "live");
+        } else {
+          ws.send(JSON.stringify({ type: "auto_text", text }));
+          showHint("Detecting the language and speaker…", "live");
         }
         tenantTextInput.value = "";
       } else {
@@ -725,103 +846,155 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Tabs
-  elements.tabAdvocate.addEventListener("click", () => {
-    elements.tabAdvocate.classList.add("active");
-    elements.tabScore.classList.remove("active");
-    elements.tabSimulator.classList.remove("active");
-    elements.viewAdvocate.classList.add("active");
-    elements.viewAdvocate.classList.remove("hidden");
-    elements.viewScore.classList.remove("active");
-    elements.viewSimulator.classList.remove("active");
-    elements.tabAdvocate.setAttribute("aria-selected", "true");
-    elements.tabScore.setAttribute("aria-selected", "false");
-    elements.tabSimulator.setAttribute("aria-selected", "false");
+  const tabPairs = [
+    [elements.tabAdvocate, elements.viewAdvocate],
+    [elements.tabSimulator, elements.viewSimulator],
+    [elements.tabScore, elements.viewScore],
+  ];
+
+  function activateTab(selectedTab) {
+    tabPairs.forEach(([tab, view]) => {
+      const active = tab === selectedTab;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
+      view.classList.toggle("active", active);
+      view.classList.toggle("hidden", !active);
+    });
+  }
+
+  tabPairs.forEach(([tab], index) => {
+    tab.addEventListener("keydown", (event) => {
+      let next = null;
+      if (event.key === "ArrowRight") next = (index + 1) % tabPairs.length;
+      if (event.key === "ArrowLeft") next = (index + tabPairs.length - 1) % tabPairs.length;
+      if (event.key === "Home") next = 0;
+      if (event.key === "End") next = tabPairs.length - 1;
+      if (next === null) return;
+      event.preventDefault();
+      tabPairs[next][0].focus();
+      tabPairs[next][0].click();
+    });
   });
 
-  elements.tabSimulator.addEventListener("click", () => {
-    elements.tabSimulator.classList.add("active");
-    elements.tabAdvocate.classList.remove("active");
-    elements.tabScore.classList.remove("active");
-    elements.viewSimulator.classList.add("active");
-    elements.viewSimulator.classList.remove("hidden");
-    elements.viewAdvocate.classList.remove("active");
-    elements.viewScore.classList.remove("active");
-    elements.tabSimulator.setAttribute("aria-selected", "true");
-    elements.tabAdvocate.setAttribute("aria-selected", "false");
-    elements.tabScore.setAttribute("aria-selected", "false");
-  });
+  elements.tabAdvocate.addEventListener("click", () => activateTab(elements.tabAdvocate));
+  elements.tabSimulator.addEventListener("click", () => activateTab(elements.tabSimulator));
+  const aboutDialog = document.getElementById("about-dialog");
+  document.getElementById("about-help").addEventListener("click", () => aboutDialog.showModal());
+  document.getElementById("close-about").addEventListener("click", () => aboutDialog.close());
+  aboutDialog.addEventListener("click", (event) => { if (event.target === aboutDialog) aboutDialog.close(); });
+
+  function scoreNode(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function renderScorecard(score) {
+    const percent = (value) => value == null ? "—" : `${(value * 100).toFixed(value === 1 ? 0 : 1)}%`;
+    const output = elements.scoreOutput;
+    output.replaceChildren();
+
+    const metrics = scoreNode("div", "score-metrics");
+    [
+      ["Precision", percent(score.micro_precision)],
+      ["Recall", percent(score.micro_recall)],
+      ["Promise accuracy", percent(score.promise_accuracy)],
+    ].forEach(([label, value]) => {
+      const card = scoreNode("article", "score-metric");
+      card.append(scoreNode("span", "score-label", label), scoreNode("strong", "score-value", value));
+      metrics.appendChild(card);
+    });
+    output.appendChild(metrics);
+
+    const context = scoreNode("div", "score-context");
+    context.append(
+      scoreNode("strong", "", "How to read this"),
+      scoreNode("p", "", "Precision asks whether displayed cues were relevant. Recall asks whether the expected cues were found. Higher is better, but this set was written and reviewed during development.")
+    );
+    output.appendChild(context);
+
+    const heading = scoreNode("div", "score-section-title");
+    heading.append(scoreNode("h4", "", "Results by cue"), scoreNode("span", "", `${score.lines} lines`));
+    output.appendChild(heading);
+
+    const table = scoreNode("table", "score-table");
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    ["Conversation cue", "Precision", "Recall"].forEach((text) => headRow.appendChild(scoreNode("th", "", text)));
+    head.appendChild(headRow); table.appendChild(head);
+    const body = document.createElement("tbody");
+    const labels = {
+      financial_term: "Financial terms",
+      penalty: "Penalties",
+      vague_commitment: "Vague commitments",
+      promise: "Promises",
+      restriction: "Restrictions",
+    };
+    Object.entries(labels).forEach(([key, label]) => {
+      const row = document.createElement("tr");
+      const values = score.per_flag[key] || {};
+      row.append(scoreNode("th", "", label), scoreNode("td", "score-number", percent(values.precision)), scoreNode("td", "score-number", percent(values.recall)));
+      body.appendChild(row);
+    });
+    table.appendChild(body); output.appendChild(table);
+    const caveat = scoreNode("div", "score-caveat");
+    caveat.append(scoreNode("strong", "", "Development sample only"), scoreNode("span", "", "Two of 20 scripted lines contained at least one error."));
+    output.appendChild(caveat);
+  }
 
   elements.tabScore.addEventListener("click", async () => {
-    elements.tabScore.classList.add("active");
-    elements.tabAdvocate.classList.remove("active");
-    elements.tabSimulator.classList.remove("active");
-    elements.viewScore.classList.add("active");
-    elements.viewScore.classList.remove("hidden");
-    elements.viewAdvocate.classList.remove("active");
-    elements.viewSimulator.classList.remove("active");
-    elements.tabScore.setAttribute("aria-selected", "true");
-    elements.tabAdvocate.setAttribute("aria-selected", "false");
-    elements.tabSimulator.setAttribute("aria-selected", "false");
-
+    activateTab(elements.tabScore);
+    elements.scoreOutput.textContent = "Loading evaluation…";
     const _fetch = window.OriginalFetch || window.fetch;
     try {
       const [resEval, resLines] = await Promise.all([
         _fetch(API_BASE + "/eval/results.json").catch(() => null),
         _fetch(API_BASE + "/data/landlord_lines.json").catch(() => null)
       ]);
-      
-      if (resEval && resEval.ok) {
-        const results = await resEval.json();
-        const truth = (resLines && resLines.ok) ? await resLines.json() : window.landlordLines;
-
-        const CATS = ["financial_term", "penalty", "vague_commitment", "promise", "restriction"];
-        let got = {};
-        results.forEach(r => got[r.id] = r);
-
-        let tp = {}, fp = {}, fn = {};
-        CATS.forEach(c => { tp[c] = 0; fp[c] = 0; fn[c] = 0; });
-        let promise_ok = 0;
-
-        truth.forEach(t => {
-          let r = got[t.id] || { flags: [], promise: false };
-          let exp = new Set(t.expected_flags || []);
-          let pred = new Set((r.flags || []).filter(f => CATS.includes(f)));
-
-          CATS.forEach(c => {
-            if (exp.has(c) && pred.has(c)) tp[c]++;
-            else if (pred.has(c)) fp[c]++;
-            else if (exp.has(c)) fn[c]++;
-          });
-          if (Boolean(r.promise) === Boolean(t.promise)) promise_ok++;
-        });
-
-        const pr = (a, b) => (a + b) ? Number((a / (a + b)).toFixed(3)) : null;
-        
-        let sum_tp = Object.values(tp).reduce((a,b)=>a+b,0);
-        let sum_fp = Object.values(fp).reduce((a,b)=>a+b,0);
-        let sum_fn = Object.values(fn).reduce((a,b)=>a+b,0);
-
-        let per = {};
-        CATS.forEach(c => {
-          per[c] = { precision: pr(tp[c], fp[c]), recall: pr(tp[c], fn[c]) };
-        });
-
-        const scoreObj = {
-          lines: truth.length,
-          micro_precision: pr(sum_tp, sum_fp),
-          micro_recall: pr(sum_tp, sum_fn),
-          promise_accuracy: Number((promise_ok / truth.length).toFixed(3)),
-          per_flag: per
-        };
-
-        elements.scoreOutput.textContent = JSON.stringify(scoreObj, null, 2);
-      } else {
-        elements.scoreOutput.textContent = "No eval results found (eval/results.json).";
+      if (!resEval || !resEval.ok) {
+        elements.scoreOutput.textContent = "Evaluation results are not available yet.";
+        return;
       }
-    } catch (e) {
-      elements.scoreOutput.textContent = "Failed to load eval results: " + e.message;
+      const results = await resEval.json();
+      const truth = (resLines && resLines.ok) ? await resLines.json() : window.landlordLines;
+      if (!Array.isArray(truth)) throw new Error("Scripted lines could not be loaded.");
+
+      const CATS = ["financial_term", "penalty", "vague_commitment", "promise", "restriction"];
+      const got = {};
+      results.forEach((result) => { got[result.id] = result; });
+      const tp = {}, fp = {}, fn = {};
+      CATS.forEach((category) => { tp[category] = 0; fp[category] = 0; fn[category] = 0; });
+      let promiseOk = 0;
+      truth.forEach((line) => {
+        const result = got[line.id] || { flags: [], promise: false };
+        const expected = new Set(line.expected_flags || []);
+        const predicted = new Set((result.flags || []).filter((flag) => CATS.includes(flag)));
+        CATS.forEach((category) => {
+          if (expected.has(category) && predicted.has(category)) tp[category]++;
+          else if (predicted.has(category)) fp[category]++;
+          else if (expected.has(category)) fn[category]++;
+        });
+        if (Boolean(result.promise) === Boolean(line.promise)) promiseOk++;
+      });
+      const ratio = (correct, incorrect) => (correct + incorrect) ? Number((correct / (correct + incorrect)).toFixed(3)) : null;
+      const sum = (values) => Object.values(values).reduce((total, value) => total + value, 0);
+      const perFlag = {};
+      CATS.forEach((category) => { perFlag[category] = { precision: ratio(tp[category], fp[category]), recall: ratio(tp[category], fn[category]) }; });
+      renderScorecard({
+        lines: truth.length,
+        micro_precision: ratio(sum(tp), sum(fp)),
+        micro_recall: ratio(sum(tp), sum(fn)),
+        promise_accuracy: Number((promiseOk / truth.length).toFixed(3)),
+        per_flag: perFlag,
+      });
+    } catch (error) {
+      elements.scoreOutput.textContent = "Evaluation results could not be loaded: " + error.message;
     }
   });
+
+  activateTab(elements.tabAdvocate);
 
   // Init
   loadSimulator();

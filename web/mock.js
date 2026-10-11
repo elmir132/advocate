@@ -23,6 +23,96 @@
     { "id": "L20", "text": "If you break the lease early you owe the rest of the rent for the full term.", "expected_flags": ["financial_term", "penalty"], "promise": false }
   ];
 
+  const landlordTranslations = {
+    uk: {
+      L01: "Застава становить орендну плату за два місяці й не повертається, якщо ви виїдете до закінчення терміну оренди.",
+      L03: "Ми, ймовірно, зможемо полагодити обігрівач десь наступного тижня. Я подивлюся, що можна зробити.",
+      L04: "Я обіцяю перефарбувати всю квартиру до того, як ви в’їдете першого числа.",
+      L07: "Суборенда повністю заборонена, а порушення цього правила означає втрату застави."
+    },
+    ru: {
+      L01: "Залог составляет арендную плату за два месяца и не возвращается, если вы съедете до окончания срока аренды.",
+      L03: "Мы, вероятно, сможем починить обогреватель на следующей неделе. Я посмотрю, что можно сделать.",
+      L04: "Я обещаю перекрасить всю квартиру до того, как вы въедете первого числа.",
+      L07: "Субаренда полностью запрещена, и нарушение этого правила означает потерю залога."
+    },
+    es: {
+      L01: "El depósito equivale a dos meses de alquiler y no es reembolsable si se marcha antes de que termine el contrato.",
+      L03: "Probablemente podamos arreglar la calefacción la próxima semana. Veré qué puedo hacer.",
+      L04: "Prometo volver a pintar todo el apartamento antes de que se mude el día primero.",
+      L07: "El subarriendo no está permitido, y si incumple esa regla perderá el depósito."
+    },
+    zh: {
+      L01: "押金相当于两个月的租金；如果您在租约到期前搬走，押金将不予退还。",
+      L03: "我们也许能在下周某个时候修好暖气。我会看看能做些什么。",
+      L04: "我保证在您一号搬进来之前重新粉刷整个公寓。",
+      L07: "完全不允许转租；违反这项规定将意味着失去押金。"
+    }
+  };
+  const tenantExamples = {
+    uk: ["Що щодо депозиту?", "What about the deposit?"],
+    ru: ["Что насчёт залога?", "What about the deposit?"],
+    es: ["¿Qué pasa con el depósito?", "What about the deposit?"],
+    zh: ["押金怎么办？", "What about the deposit?"],
+    en: ["What about the deposit?", "What about the deposit?"]
+  };
+  function mockAutoSpeaker(text, language) {
+    if (language === "en") return null;
+    if ((language === "uk" || language === "ru") && /[\u0400-\u04ff]/.test(text)) return "tenant";
+    if (language === "zh" && /[\u3400-\u9fff]/.test(text)) return "tenant";
+    if (language === "es" && (/[¿¡áéíóúüñ]/i.test(text) || /\b(el|la|qué|depósito|alquiler|calefacción)\b/i.test(text))) return "tenant";
+    const english = text.toLowerCase().match(/\b(the|this|that|what|when|we|you|your|can|could|will|probably|maybe|rent|deposit|heater|lease|fix|repair)\b/g) || [];
+    return english.length >= 2 ? "landlord" : null;
+  }
+
+  const summaryHeadings = {
+    uk: ["Коротко про розмову", "Обіцянки", "Не є обіцянкою", "Фінансові умови, штрафи та правила"],
+    ru: ["Кратко о разговоре", "Обещания", "Не является обязательством", "Финансовые условия, штрафы и правила"],
+    es: ["Resumen de la conversación", "Promesas", "No es un compromiso", "Condiciones económicas, penalizaciones y reglas"],
+    zh: ["对话概述", "承诺", "并非明确承诺", "费用、处罚和规则"],
+    en: ["Conversation overview", "Promises", "Not a commitment", "Money terms, penalties and rules"]
+  };
+  const summaryOverviews = {
+    uk: "Розмова стосується ремонту обігрівача, обіцянки перефарбувати квартиру та умов застави.",
+    ru: "Разговор касается ремонта обогревателя, обещания перекрасить квартиру и условий залога.",
+    es: "La conversación trata sobre la reparación de la calefacción, la promesa de volver a pintar el apartamento y las condiciones del depósito.",
+    zh: "对话涉及暖气维修、重新粉刷公寓的承诺以及押金条件。",
+    en: "The conversation covers a heater repair, a promise to repaint the apartment, and deposit terms."
+  };
+  const englishLines = Object.fromEntries(["L01", "L03", "L04"].map((id) => [id, landlordLines.find((line) => line.id === id).text]));
+  function translatedLine(language, id) {
+    return language === "en" ? englishLines[id] : (landlordTranslations[language] || landlordTranslations.uk)[id];
+  }
+  function mockSummary(language) {
+    const headings = summaryHeadings[language] || summaryHeadings.uk;
+    const section = `# ${headings[0]}
+- ${summaryOverviews[language] || summaryOverviews.uk}
+
+# ${headings[1]}
+- ${translatedLine(language, "L04")}
+
+# ${headings[2]}
+- ${translatedLine(language, "L03")}
+
+# ${headings[3]}
+- ${translatedLine(language, "L01")}`;
+    if (language === "en") return section;
+    const english = summaryHeadings.en;
+    return `${section}
+
+# ${english[0]}
+- ${summaryOverviews.en}
+
+# ${english[1]}
+- ${englishLines.L04}
+
+# ${english[2]}
+- ${englishLines.L03}
+
+# ${english[3]}
+- ${englishLines.L01}`;
+  }
+
   window.landlordLines = landlordLines; // export for UI
 
   class MockWebSocket {
@@ -33,6 +123,8 @@
       this.onopen = null;
       this.onclose = null;
       this.onerror = null;
+      this._hasBufferedAudio = false;
+      this.tenantLang = "uk";
 
       setTimeout(() => {
         if (this.onopen) this.onopen(new Event("open"));
@@ -53,30 +145,59 @@
       try {
         const msg = JSON.parse(data);
         if (msg.type === "start") {
+          this.tenantLang = msg.tenant_lang || "uk";
           this._sendToClient({ type: "status", state: "listening" });
+        } else if (msg.type === "auto_text") {
+          const speaker = mockAutoSpeaker(msg.text, this.tenantLang);
+          if (!speaker) {
+            this._sendToClient({ type: "error", message: "I could not tell who typed that. Choose Me or Landlord and send it again." });
+          } else {
+            this._sendToClient({ type: "speaker", speaker, detected: true, lang: speaker === "landlord" ? "en" : this.tenantLang });
+            if (speaker === "landlord") {
+              this.send(JSON.stringify({ type: "landlord_text", id: "AUTO", text: msg.text }));
+            } else {
+              const example = tenantExamples[this.tenantLang] || tenantExamples.uk;
+              this._sendToClient({ type: "transcript", speaker: "tenant", lang: this.tenantLang, text: msg.text });
+              this._sendToClient({ type: "translation", to: "landlord", text: msg.text === example[0] ? example[1] : "[Mock English translation]" });
+            }
+          }
         } else if (msg.type === "audio") {
-          // Mock tenant speaking
-          this._sendToClient({ type: "status", state: "thinking" });
-          setTimeout(() => {
-            this._sendToClient({ type: "transcript", speaker: "tenant", lang: "uk", text: "Що щодо депозиту?" });
-            this._sendToClient({ type: "translation", to: "landlord", text: "What about the deposit?" });
+          if (!msg.data) {
+            // Built-in screenshot example.
+            this._sendToClient({ type: "status", state: "thinking" });
+            setTimeout(() => {
+              const example = tenantExamples[this.tenantLang] || tenantExamples.uk;
+              this._sendToClient({ type: "transcript", speaker: "tenant", lang: this.tenantLang, text: example[0] });
+              this._sendToClient({ type: "translation", to: "landlord", text: example[1] });
+              this._sendToClient({ type: "status", state: "listening" });
+            }, 1000);
+          } else {
+            this._hasBufferedAudio = true;
             this._sendToClient({ type: "status", state: "listening" });
-          }, 1000);
+          }
+        } else if (msg.type === "audio_end" && this._hasBufferedAudio) {
+          this._hasBufferedAudio = false;
+          const landlord = msg.speaker === "landlord" || (msg.speaker === "auto" && msg.source === "upload");
+          if (landlord) {
+            this.send(JSON.stringify({ type: "landlord_text", id: "UPLOAD", text: "We can probably fix the heater sometime next week, I'll see what I can do." }));
+          } else {
+            this._sendToClient({ type: "status", state: "thinking" });
+            setTimeout(() => {
+              const example = tenantExamples[this.tenantLang] || tenantExamples.uk;
+              this._sendToClient({ type: "transcript", speaker: "tenant", lang: this.tenantLang, text: example[0] });
+              this._sendToClient({ type: "translation", to: "landlord", text: example[1] });
+              this._sendToClient({ type: "status", state: "listening" });
+            }, 500);
+          }
         } else if (msg.type === "landlord_text") {
           this._sendToClient({ type: "status", state: "thinking" });
           setTimeout(() => {
-            const line = landlordLines.find(l => l.id === msg.id) || { text: msg.text, expected_flags: [], promise: false };
+            const line = landlordLines.find(l => l.id === msg.id || l.text === msg.text) || { id: msg.id, text: msg.text, expected_flags: [], promise: false };
             this._sendToClient({ type: "transcript", speaker: "landlord", lang: "en", text: line.text });
-            const mockTranslations = {
-              L01: "Застава становить орендну плату за два місяці й не повертається, якщо ви виїдете до закінчення терміну оренди.",
-              L03: "Ми, ймовірно, зможемо полагодити обігрівач десь наступного тижня. Я подивлюся, що можна зробити.",
-              L04: "Я обіцяю перефарбувати всю квартиру до того, як ви в’їдете першого числа.",
-              L07: "Суборенда повністю заборонена, а порушення цього правила означає втрату застави."
-            };
             this._sendToClient({
               type: "translation",
               to: "tenant",
-              text: mockTranslations[line.id] || "[Mock mode: translation is not available for this sample.]"
+              text: translatedLine(this.tenantLang, line.id) || "[Mock mode: translation is not available for this sample.]"
             });
             
             const noteMap = {
@@ -101,8 +222,8 @@
           setTimeout(() => {
             this._sendToClient({
               type: "summary",
-              languages: ["uk", "en"],
-              markdown: "### Summary\\n\\n**Promises**:\\n- Repaint the apartment\\n- Email the signed lease\\n- Cover the window cost\\n\\n**Warnings**:\\n- Deposit is non-refundable\\n- Rent goes up 5%\\n"
+              languages: [this.tenantLang, "en"],
+              markdown: mockSummary(this.tenantLang)
             });
           }, 1000);
         }
