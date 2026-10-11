@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0b5147">
+  <title>Advocate — Live tenant interpreter</title>
+  <link rel="stylesheet" href="style.css">
+  <script>window.ADVOCATE_STATIC_DEMO = true;</script>
+  <style>body{padding-top:38px}.demo-banner{position:fixed;top:0;left:0;right:0;min-height:38px;z-index:60;display:flex;align-items:center;justify-content:center;gap:.4em;flex-wrap:wrap}@media(max-width:760px){body{padding-top:62px}.demo-banner{min-height:62px;font-size:.78rem}}</style>
+  <script>
+    if (window.location.search.includes("mock=1") || window.ADVOCATE_STATIC_DEMO) {
+      document.write('<script src="mock.js"><\/script>');
+    }
+  </script>
+</head>
+<body id="app">
+  <div id="connection-overlay" class="hidden" role="alertdialog" aria-modal="true" aria-labelledby="connection-title">
+    <div class="overlay-content">
+      <span class="overlay-icon" aria-hidden="true">!</span>
+      <h2 id="connection-title">Connection interrupted</h2>
+      <p>Your conversation is still on this screen. Reconnect to continue.</p>
+      <button id="retry-btn">Try again</button>
+    </div>
+  </div>
+
+  <div class="demo-banner" role="note"><span>Scripted demo. No AI calls here, so your own speech is not analysed.</span> <span>Working app and code: <a href="https://github.com/elmir132/advocate">github.com/elmir132/advocate</a></span></div>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div class="brand-copy"><h1>Advocate</h1><span class="tagline">Speak up, in any language</span></div>
+    </div>
+    <span class="beta-note"><span aria-hidden="true">●</span> Not legal advice</span>
+  </header>
+
+  <main class="main-layout">
+    <section class="left-panel" aria-labelledby="conversation-title">
+      <div class="conversation-heading">
+        <div><span class="eyebrow">Live interpreter</span><h2 id="conversation-title">Conversation</h2></div>
+        <div class="status-bar" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="status-indicator">Listening</span>
+          <div id="waveform" class="waveform" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+      </div>
+      <div id="conversation" class="conversation" aria-live="polite" aria-relevant="additions">
+        <div id="empty-state" class="empty-state">
+          <span class="empty-state-mark" aria-hidden="true"></span>
+          <strong>Start with your own words.</strong>
+          <span>Hold Space to speak, type a message below, or play a landlord line from the simulator.</span>
+        </div>
+      </div>
+    </section>
+
+    <aside class="right-panel" aria-label="Conversation advocate">
+      <div class="rail-heading">
+        <div><span class="eyebrow">Conversation support</span><p>Important details are collected here for you to review—not decided for you.</p></div>
+        <button id="about-help" class="about-help" type="button" aria-label="About Advocate" title="About Advocate">?</button>
+      </div>
+      <div class="tabs" role="tablist" aria-label="Support tools">
+        <button id="tab-advocate" class="tab active" role="tab" aria-selected="true" aria-controls="advocate-view">Advocate</button>
+        <button id="tab-simulator" class="tab" role="tab" aria-selected="false" aria-controls="simulator-view">Simulator</button>
+        <button id="tab-score" class="tab" role="tab" aria-selected="false" aria-controls="score-view">Evaluation</button>
+      </div>
+
+      <div id="advocate-view" class="tab-content active" role="tabpanel" aria-labelledby="tab-advocate">
+        <section class="insight-block promises-list">
+          <div class="section-title"><span class="section-icon promise-icon" aria-hidden="true"></span><h3>Promises so far</h3></div>
+          <ul id="promises-ul"></ul>
+        </section>
+        <section class="insight-block flags-list">
+          <div class="section-title"><span class="section-icon flag-icon" aria-hidden="true"></span><h3>Details to review</h3></div>
+          <div id="flags-container" class="flags-container"></div>
+        </section>
+        <p class="rail-note">Flags are conversation cues, not legal conclusions.</p>
+      </div>
+
+      <div id="simulator-view" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-simulator">
+        <div class="view-heading"><h3>Landlord simulator</h3><p>Play a sample line to demonstrate translation and review cues.</p></div>
+        <div id="simulator-lines" class="simulator-lines-flat"></div>
+      </div>
+
+      <div id="score-view" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-score">
+        <div class="view-heading"><h3>Small scripted evaluation</h3><p>A transparent check of what Advocate catches—and what it gets wrong.</p></div>
+        <div id="score-output" class="score-output" role="status" aria-live="polite">Open this tab to load results.</div>
+      </div>
+
+    </aside>
+  </main>
+
+  <section class="bottom-panel" aria-label="Conversation controls">
+    <div class="controls-left">
+      <div class="controls-left-top">
+        <label class="select-wrap"><span class="sr-only">Tenant language</span><select id="tenant-lang" aria-label="Tenant language"><option value="uk" selected>Ukrainian</option><option value="ru">Russian</option><option value="es">Spanish</option><option value="zh">Chinese</option><option value="en">English</option></select></label>
+        <button id="mic-btn" class="mic-btn" aria-label="Hold or tap to speak" title="Hold Space, or tap for hands-free recording"><span class="mic-icon" aria-hidden="true"></span><span class="mic-label">Hold or tap</span><kbd>Space</kbd></button>
+        <input id="audio-file-input" type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.webm,.flac" hidden>
+        <button id="audio-upload-btn" class="audio-upload-btn" type="button" title="Upload one voice message, up to 60 seconds"><span class="upload-icon" aria-hidden="true">↑</span><span>Upload audio</span></button>
+        <div id="speaker-choice" class="speaker-choice" role="radiogroup" aria-label="Who is speaking">
+          <button type="button" role="radio" aria-checked="true" data-speaker="auto" title="English is treated as the landlord, your language as you">Auto</button>
+          <button type="button" role="radio" aria-checked="false" data-speaker="tenant">Me</button>
+          <button type="button" role="radio" aria-checked="false" data-speaker="landlord">Landlord</button>
+        </div>
+        <label id="mute-toggle-label" class="mute-label"><input type="checkbox" id="mute-toggle"><span>Mute voice</span></label>
+      </div>
+      <div class="text-input-wrap"><input type="text" id="tenant-text-input" placeholder="Type a message — Auto detects the speaker" aria-label="Type a message; Auto routes English to the landlord and the selected language to the renter"><kbd>Enter</kbd></div>
+    </div>
+    <div class="controls-right">
+      <div class="approval-copy"><strong>Conversation record</strong><span>Review before anything is prepared.</span></div>
+      <button id="approve-btn" disabled>Approve summary <span aria-hidden="true">→</span></button>
+    </div>
+  </section>
+
+  <footer><p>Speech and text are processed by Gemini <span>•</span> Flags are candidates <span>•</span> No message or summary is sent automatically</p></footer>
+
+  <dialog id="summary-dialog">
+    <div class="dialog-content">
+      <span class="eyebrow">Tenant approved</span>
+      <h2>Conversation summary</h2>
+      <div id="summary-content"></div>
+      <button id="close-summary">Close summary</button>
+    </div>
+  </dialog>
+
+  <dialog id="about-dialog" class="about-dialog" aria-labelledby="about-title">
+    <div class="dialog-content">
+      <div class="about-hero">
+        <span class="about-mark" aria-hidden="true"></span>
+        <span class="eyebrow">Why Advocate exists</span>
+        <h2 id="about-title">Understand the words. Keep the commitments.</h2>
+        <p>Advocate helps renters navigate important landlord conversations across languages without pretending to be a lawyer.</p>
+      </div>
+      <ol class="about-steps" aria-label="How Advocate works">
+        <li><span>1</span><div><strong>Listen and translate</strong><p>One control hears either side and translates the conversation.</p></div></li>
+        <li><span>2</span><div><strong>Surface what matters</strong><p>Gemini flags candidate money terms, penalties, restrictions and vague commitments.</p></div></li>
+        <li><span>3</span><div><strong>Keep the promises</strong><p>Specific commitments remain visible while the conversation continues.</p></div></li>
+        <li><span>4</span><div><strong>Approve the record</strong><p>A bilingual summary is prepared only after the renter asks for it.</p></div></li>
+      </ol>
+      <div class="about-facts">
+        <article><strong>Built with Gemini</strong><p>Speech transcription, translation, structured review cues and summaries.</p></article>
+        <article><strong>Human stays in control</strong><p>Flags are candidates, not legal conclusions. Nothing is automatically sent or signed.</p></article>
+      </div>
+      <p class="about-note">One-day prototype built at The New Agentic Economy Hackathon, October 2026.</p>
+      <button id="close-about" class="about-close" type="button">Close</button>
+    </div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

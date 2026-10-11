@@ -1,0 +1,148 @@
+[
+  {
+    "id": "L01",
+    "flags": [
+      "financial_term",
+      "penalty"
+    ],
+    "promise": false
+  },
+  {
+    "id": "L02",
+    "flags": [
+      "financial_term",
+      "penalty"
+    ],
+    "promise": false
+  },
+  {
+    "id": "L03",
+    "flags": [
+      "vague_commitment"
+    ],
+    "promise": false
+  },
+  {
+    "id": "L04",
+    "flags": [
+      "promise"
+    ],
+    "promise": true
+  },
+  {
+    "id": "L05",
+    "flags": [
+      "financial_term",
+      "vague_commitment"
+    ],
+    "promise": false
+  },
+  {
+    "id": "L06",
+    "flags": [],
+    "promise": false
+  },
+  {
+    "id": "L07",
+    "flags": [
+      "restriction",
+      "penalty"
+    ],
+    "promise": false
+  },
+  {
+    "id": "L08",
+    "flags": [
+      "financial_term",
+      "vague_commitment"
+    ],
+    "promise": false
+  },
+  {
+    "id": "L09",
+    "flags": [
+      "promise"
+    ],
+    "promise": true
+  },
+  {
+    "id": "L10",
+    "flags": [],
+    "promise": false
+  },
+  {
+    "id": "L11",
+    "flags": [
+      "restriction",
+      "financial_term"
+    ],
+    "promise": false
+  },
+  {
+    "id": "L12",
+    "flags": [
+      "vague_commitment"
+    ],
+    "promise": false
+  },
+  {
+    "id": "L13",
+    "flags": [
+      "financial_term"
+    ],
+    "promise": false
+  },
+  {
+    "id": "L14",
+    "flags": [
+      "financial_term",
+      "promise"
+    ],
+    "promise": true
+  },
+  {
+    "id": "L15",
+    "flags": [],
+    "promise": false
+  },
+  {
+    "id": "L16",
+    "flags": [
+      "restriction"
+    ],
+    "promise": false
+  },
+  {
+    "id": "L17",
+    "flags": [
+      "financial_term",
+      "vague_commitment"
+    ],
+    "promise": false
+  },
+  {
+    "id": "L18",
+    "flags": [
+      "financial_term",
+      "promise"
+    ],
+    "promise": true
+  },
+  {
+    "id": "L19",
+    "flags": [
+      "financial_term",
+      "promise"
+    ],
+    "promise": true
+  },
+  {
+    "id": "L20",
+    "flags": [
+      "financial_term",
+      "penalty",
+      "restriction"
+    ],
+    "promise": false
+  }
+]
