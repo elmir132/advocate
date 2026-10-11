@@ -415,3 +415,7 @@ body[data-state="recording"] .waveform i { animation: none; opacity: .95; height
 .controls-left-top { flex: 0 1 auto; flex-wrap: wrap; min-width: 0; }
 .text-input-wrap { flex: 1 1 280px; min-width: 0; }
 .mic-hint { flex: 1 0 100%; }
+
+/* Shown only on the static, key-free copy of the page. */
+.demo-banner { background: #fff4dc; color: #6b4705; border-bottom: 1px solid #f0d9a4; padding: 7px 24px; font-size: .84rem; text-align: center; }
+.demo-banner a { color: #0b5147; font-weight: 650; }

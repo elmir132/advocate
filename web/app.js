@@ -3,7 +3,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // Only a file:// page or a separate dev server falls back to the local backend address.
   const devPorts = ["3000", "5173", "5500", "8080"];
   const isServedByBackend = window.location.protocol.startsWith("http") && !devPorts.includes(window.location.port);
-  const API_BASE = isServedByBackend ? "" : "http://127.0.0.1:8000";
+  // A static copy (GitHub Pages) or ?mock=1 has no server: read data files next to the page.
+  const staticDemo = window.ADVOCATE_STATIC_DEMO === true || window.location.search.includes("mock=1");
+  const API_BASE = staticDemo ? "." : (isServedByBackend ? "" : "http://127.0.0.1:8000");
   const WS_BASE = isServedByBackend 
     ? (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host + "/ws"
     : "ws://127.0.0.1:8000/ws";
