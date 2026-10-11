@@ -2,6 +2,10 @@
 
 A live interpreter for a tenant and a landlord that also speaks up for the tenant. It translates both ways, flags what matters in the landlord's words (money terms, penalties, vague "maybe" commitments, promises, rules), and prepares a two-language summary only after the tenant approves. Built in one day at The New Agentic Economy Hackathon (Google DeepMind, NYC, Oct 10 2026) with Gemini live voice, transcription and translation. Not legal advice. Conversation content is processed by Gemini; no message or summary is automatically sent to a landlord or signed.
 
+![A short recording of Advocate: a typed Ukrainian question is translated, and the landlord's reply is flagged](docs/demo.gif)
+
+**Try it:** a [scripted demo page](https://elmirabd.me/advocate/) runs in the browser with prepared answers and no AI calls. The recording above is the real app (typed input, sped up 3x); the full [70-second video](docs/demo.mp4) has no sound.
+
 ![screenshot](web/screenshot.png)
 
 ## Run it
