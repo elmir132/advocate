@@ -32,3 +32,7 @@ One hold-to-speak button serves both people. The clip is transcribed, and the la
 
 ## Layout
 `backend/` FastAPI server and Gemini calls, `web/` the page, `eval/` the scorer runner, `CONTRACT.md` the message format between them.
+
+## License
+
+MIT, see `LICENSE`.
